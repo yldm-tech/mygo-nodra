@@ -1,22 +1,46 @@
 # Nodra architecture
 
-Nodra is the state layer. It owns values, versions, subscriptions and update
-coalescing; it does not know about windows, renderers, persistence or IPC.
+Nodra has one state owner and explicit integration boundaries:
 
 ```text
-application state -> nodra.Store[T] -> subscribers -> UI invalidation
-                                  -> selector subscribers
-                                  -> context-bound Watch channels
+                 ┌─ selector subscribers
+application ───► Store[T] ─┼─ normal subscribers ─► UI invalidation
+                 ├─ History
+                 ├─ Persistence
+                 └─ Watch channels
 ```
 
-`Set` and `Update` publish synchronously after releasing the store lock. A
-subscriber may safely read or update the same store. `Batch` defers publication
-until the outermost batch returns and publishes one snapshot. `Watch` is a
-bounded, best effort stream for consumers that prefer channels; slow consumers
-may skip intermediate snapshots.
+## Store lifecycle
 
-Nodra intentionally does not deep-copy generic values. Applications should use
-value-oriented state or copy maps and slices at their mutation boundary.
+`New` creates an open store at version zero. `Set` and `Update` publish a new
+snapshot. `UpdateErr` restores the previous value and publishes nothing when the
+callback returns an error or panics. `Batch` groups nested notifications and publishes
+once at the outermost boundary. Concurrent writers may join an open batch; use
+`Transaction` for one serialized mutation. A closed store rejects future writes with
+`ErrClosed`, removes subscribers and closes active `Watch` streams.
 
-The `integrations/mygo` package is an adapter, not part of the core. It connects
-a store to `Window.Invalidate` so native MyGo views can rebuild on state changes.
+## Notifications
+
+Listeners run synchronously on the writer goroutine after the store lock is
+released. This makes a listener safe to call `Get`, `Update`, `Close` or
+unsubscribe, while preserving an ordered callback sequence for one writer.
+Different concurrent writers may invoke listeners concurrently. Applications
+that need serialized side effects should use their own queue or mutex.
+
+`SubscribeWith` can deliver the initial snapshot and can compare values per
+subscriber. `SubscribeSelector` is a convenience for comparable projections.
+
+## Persistence
+
+Persistence is explicit. `Storage` owns bytes and `Codec[T]` owns encoding.
+`FileStorage` and `JSONCodec[T]` provide an atomic JSON file path out of the box. The
+core package does not assume a filesystem, JSON, database or encryption scheme.
+`AutoSaveWithErrors` exposes save failures through a bounded error channel;
+`AutoSave` is available when an application intentionally wants best-effort
+saving.
+
+## MyGo integration
+
+`integrations/mygo` imports MyGo and only connects a store subscription to
+`Window.Invalidate`. The core Store remains usable in other Go UI toolkits,
+services and tests without importing MyGo.
