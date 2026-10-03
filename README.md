@@ -31,7 +31,9 @@ tasks.Update(func(value *[]Task) {
 - `Derive` for memoized computed/getter values
 - `Action` / `Do` with action timing and error events
 - `SubscribeMutations` with direct, patch, reset and action metadata
-- `Create`, `State`, `Patch`, and `Reset` aliases for familiar Pinia/Zustand workflows
+- `Create`, `Define`, `State`, `Patch`, and `Reset` aliases for familiar Pinia/Zustand workflows
+- Store IDs and independent named store instances
+- Action lifecycle hooks: before, after, and error
 - Nested `Batch` notification groups that publish one final snapshot
 - `Transaction` for one serialized, fallible mutation
 - `Track` history with bounded undo and redo
@@ -89,3 +91,17 @@ fmt.Println(store.State().Count, double.Get())
 ```
 
 See [`docs/architecture.md`](docs/architecture.md) for the full concept mapping.
+
+
+## Named stores
+
+```go
+counter := nodra.Define("counter", func() Counter {
+    return Counter{Count: 0}
+})
+store := counter.New()
+```
+
+Each call to `New` creates an independent instance with the same initial-state
+factory. The ID is available to mutation and action observers for logging and
+devtools integrations.

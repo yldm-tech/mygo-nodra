@@ -142,11 +142,35 @@ type Mutation[T any] struct {
 
 // ActionEvent describes one completed action.
 type ActionEvent struct {
+	StoreID  string
 	Name     string
 	Started  time.Time
 	Finished time.Time
 	Duration time.Duration
 	Err      error
+}
+
+// ActionHooks observes action lifecycle events. Before runs before the
+// mutation; After runs only on success; Error runs only on failure.
+type ActionHooks struct {
+	Before func(ActionEvent)
+	After  func(ActionEvent)
+	Error  func(ActionEvent)
+}
+
+// SubscribeActionHooks registers lifecycle hooks and returns an unsubscribe function.
+func (s *Store[T]) SubscribeActionHooks(hooks ActionHooks) func() {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return func() {}
+	}
+	s.nextID++
+	id := s.nextID
+	s.actionHooks[id] = hooks
+	s.mu.Unlock()
+	var once sync.Once
+	return func() { once.Do(func() { s.mu.Lock(); delete(s.actionHooks, id); s.mu.Unlock() }) }
 }
 
 func (s *Store[T]) SubscribeActions(fn func(ActionEvent)) func() {
@@ -172,22 +196,45 @@ func (s *Store[T]) Do(name string, fn func(*T) error) error {
 		return errors.New("nodra: nil action")
 	}
 	started := time.Now()
+	event := ActionEvent{StoreID: s.ID(), Name: name, Started: started}
+	s.mu.RLock()
+	hooks := make([]ActionHooks, 0, len(s.actionHooks))
+	for _, hook := range s.actionHooks {
+		hooks = append(hooks, hook)
+	}
+	s.mu.RUnlock()
+	for _, hook := range hooks {
+		if hook.Before != nil {
+			hook.Before(event)
+		}
+	}
 	err := s.updateNamed(name, MutationAction, fn)
 	finished := time.Now()
+	event.Finished = finished
+	event.Duration = finished.Sub(started)
+	event.Err = err
 	s.mu.RLock()
 	listeners := make([]func(ActionEvent), 0, len(s.actionListeners))
 	for _, listener := range s.actionListeners {
 		listeners = append(listeners, listener)
 	}
 	s.mu.RUnlock()
-	event := ActionEvent{Name: name, Started: started, Finished: finished, Duration: finished.Sub(started), Err: err}
 	for _, listener := range listeners {
 		listener(event)
+	}
+	for _, hook := range hooks {
+		if err == nil {
+			if hook.After != nil {
+				hook.After(event)
+			}
+		} else if hook.Error != nil {
+			hook.Error(event)
+		}
 	}
 	return err
 }
 
-// Action returns a reusable named action function, matching Pinia's action
+// Action returns a reusable named action function, matching Pinia action
 // definitions while keeping Go's explicit function types.
 func (s *Store[T]) Action(name string, fn func(*T) error) func() error {
 	return func() error { return s.Do(name, fn) }

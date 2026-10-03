@@ -52,6 +52,7 @@ Nodra intentionally maps concepts, not framework syntax:
 | Pinia / Zustand | Nodra | Notes |
 |---|---|---|
 | `create` / `createStore` | `Create(initial)` | Generic store value is explicit Go state |
+| Pinia `defineStore(id, options)` | `Define(id, initial).New()` | Factory creates independent named instances |
 | `getState` | `Get` / `State` / `Snapshot` | Snapshot includes a monotonic version |
 | `set` | `Set` / `Update` | Errors are explicit and writes are concurrency safe |
 | `$patch(fn)` | `Patch(fn)` / `Batch(fn)` | One publication for grouped changes |
@@ -59,6 +60,7 @@ Nodra intentionally maps concepts, not framework syntax:
 | `getters` / computed | `Derive(store, selector, equals)` | Memoized derived value with subscriptions |
 | `subscribeWithSelector` | `SubscribeSelectorWith` | Current and previous selected values |
 | Pinia `actions` | `Action` / `Do` | Named action events include duration and errors |
+| Pinia `$onAction` | `SubscribeActionHooks` | Before, after and error callbacks |
 | `$subscribe` | `Subscribe` / `SubscribeMutations` | Mutation metadata includes type and previous state |
 | persist middleware | `Persistence`, `JSONCodec`, `FileStorage` | Storage and encoding remain replaceable |
 

@@ -30,6 +30,8 @@ type Store[T any] struct {
 	listeners         map[uint64]listener[T]
 	mutationListeners map[uint64]func(Mutation[T])
 	actionListeners   map[uint64]func(ActionEvent)
+	actionHooks       map[uint64]ActionHooks
+	id                string
 	batch             int
 	dirty             bool
 	batchBefore       T
@@ -39,8 +41,9 @@ type Store[T any] struct {
 	done              chan struct{}
 }
 
-func New[T any](initial T) *Store[T] {
-	return &Store[T]{value: initial, initial: initial, listeners: map[uint64]listener[T]{}, mutationListeners: map[uint64]func(Mutation[T]){}, actionListeners: map[uint64]func(ActionEvent){}, done: make(chan struct{})}
+func New[T any](initial T) *Store[T] { return newStore("", initial) }
+func newStore[T any](id string, initial T) *Store[T] {
+	return &Store[T]{id: id, value: initial, initial: initial, listeners: map[uint64]listener[T]{}, mutationListeners: map[uint64]func(Mutation[T]){}, actionListeners: map[uint64]func(ActionEvent){}, actionHooks: map[uint64]ActionHooks{}, done: make(chan struct{})}
 }
 func (s *Store[T]) Snapshot() Snapshot[T] {
 	s.mu.RLock()
@@ -184,6 +187,8 @@ func (s *Store[T]) Close() error {
 	s.listeners = nil
 	s.mutationListeners = nil
 	s.actionListeners = nil
+	s.actionHooks = nil
+	s.actionHooks = nil
 	return nil
 }
 func (s *Store[T]) Subscribe(fn func(Snapshot[T])) func() {
