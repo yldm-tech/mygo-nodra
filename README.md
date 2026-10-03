@@ -8,6 +8,12 @@
 go get github.com/yldm-tech/mygo-nodra
 ```
 
+For native MyGo window invalidation, also add the optional adapter:
+
+```sh
+go get github.com/yldm-tech/mygo-nodra/mygo
+```
+
 ```go
 import nodra "github.com/yldm-tech/mygo-nodra"
 
@@ -41,7 +47,7 @@ tasks.Update(func(value *[]Task) {
 - Ready-to-use `FileStorage` and `JSONCodec[T]` with atomic file replacement
 - `AutoSaveWithErrors` for observable persistence failures
 - Context-bound, bounded `Watch` streams that close with the store
-- `integrations/mygo` adapter for `Window.Invalidate`
+- `mygo` adapter package for `Window.Invalidate`
 
 ## Design guarantees
 
@@ -54,21 +60,18 @@ tasks.Update(func(value *[]Task) {
 ## Repository layout
 
 ```text
-store.go / store_test.go       core store and concurrency tests
-history.go / history_test.go   bounded undo/redo
-persist.go / persist_test.go   storage and codec integration
-file.go / file_test.go         atomic JSON file persistence
-integrations/mygo/             MyGo native window adapter
-examples/basic/                standalone usage example
-examples/mygo/                 runnable native MyGo example
+packages/nodra/                 core store, history, persistence, and tests
+packages/mygo/                  MyGo native window adapter and tests
+examples/                       standalone and native MyGo examples
 docs/architecture.md           lifecycle and threading details
+go.work                        workspace joining the three Go modules
 ```
 
 ## Verification
 
 ```sh
-go test -race ./...
-go vet ./...
+go test -race ./packages/nodra/... ./packages/mygo/... ./examples/...
+go vet ./packages/nodra/... ./packages/mygo/... ./examples/...
 ```
 
 Run the native MyGo example with `go run ./examples/mygo`.

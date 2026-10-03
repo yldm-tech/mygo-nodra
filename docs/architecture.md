@@ -41,7 +41,7 @@ saving.
 
 ## MyGo integration
 
-`integrations/mygo` imports MyGo and only connects a store subscription to
+`packages/mygo` imports MyGo and only connects a store subscription to
 `Window.Invalidate`. The core Store remains usable in other Go UI toolkits,
 services and tests without importing MyGo.
 
@@ -66,5 +66,5 @@ Nodra intentionally maps concepts, not framework syntax:
 
 Go has no component hooks or proxy-based mutable objects. A MyGo view reads a
 snapshot during its render and subscribes to invalidation through
-`integrations/mygo`; background work calls `Update` and the adapter requests a
+`packages/mygo`; background work calls `Update` and the adapter requests a
 new native frame.
