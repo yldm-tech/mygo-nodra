@@ -27,7 +27,11 @@ tasks.Update(func(value *[]Task) {
 - Generic, concurrency-safe `Store[T]` with versioned snapshots
 - `Set`, `Update`, and `UpdateErr` with rollback on returned errors and panics
 - `Subscribe` and `SubscribeWith` with immediate delivery and per-subscriber equality
-- `SubscribeSelector` for focused updates
+- `SubscribeSelector` and `SubscribeSelectorWith` for focused updates with previous values
+- `Derive` for memoized computed/getter values
+- `Action` / `Do` with action timing and error events
+- `SubscribeMutations` with direct, patch, reset and action metadata
+- `Create`, `State`, `Patch`, and `Reset` aliases for familiar Pinia/Zustand workflows
 - Nested `Batch` notification groups that publish one final snapshot
 - `Transaction` for one serialized, fallible mutation
 - `Track` history with bounded undo and redo
@@ -66,3 +70,22 @@ go vet ./...
 ```
 
 Run the native MyGo example with `go run ./examples/mygo`.
+
+
+## Pinia/Zustand-style example
+
+```go
+store := nodra.Create(Counter{Count: 0})
+increment := store.Action("increment", func(state *Counter) error {
+    state.Count++
+    return nil
+})
+double := nodra.Derive(store, func(state Counter) int {
+    return state.Count * 2
+}, func(a, b int) bool { return a == b })
+
+_ = increment()
+fmt.Println(store.State().Count, double.Get())
+```
+
+See [`docs/architecture.md`](docs/architecture.md) for the full concept mapping.

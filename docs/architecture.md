@@ -44,3 +44,25 @@ saving.
 `integrations/mygo` imports MyGo and only connects a store subscription to
 `Window.Invalidate`. The core Store remains usable in other Go UI toolkits,
 services and tests without importing MyGo.
+
+## API mapping from Pinia and Zustand
+
+Nodra intentionally maps concepts, not framework syntax:
+
+| Pinia / Zustand | Nodra | Notes |
+|---|---|---|
+| `create` / `createStore` | `Create(initial)` | Generic store value is explicit Go state |
+| `getState` | `Get` / `State` / `Snapshot` | Snapshot includes a monotonic version |
+| `set` | `Set` / `Update` | Errors are explicit and writes are concurrency safe |
+| `$patch(fn)` | `Patch(fn)` / `Batch(fn)` | One publication for grouped changes |
+| `$reset()` | `Reset()` | Restores the initial value |
+| `getters` / computed | `Derive(store, selector, equals)` | Memoized derived value with subscriptions |
+| `subscribeWithSelector` | `SubscribeSelectorWith` | Current and previous selected values |
+| Pinia `actions` | `Action` / `Do` | Named action events include duration and errors |
+| `$subscribe` | `Subscribe` / `SubscribeMutations` | Mutation metadata includes type and previous state |
+| persist middleware | `Persistence`, `JSONCodec`, `FileStorage` | Storage and encoding remain replaceable |
+
+Go has no component hooks or proxy-based mutable objects. A MyGo view reads a
+snapshot during its render and subscribes to invalidation through
+`integrations/mygo`; background work calls `Update` and the adapter requests a
+new native frame.
