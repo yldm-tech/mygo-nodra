@@ -8,5 +8,3 @@ require (
 )
 
 require github.com/ebitengine/purego v0.11.1 // indirect
-
-replace github.com/yldm-tech/mygo-nodra => ../nodra

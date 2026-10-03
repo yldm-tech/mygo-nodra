@@ -12,7 +12,3 @@ require (
 	github.com/ebitengine/purego v0.11.1 // indirect
 	github.com/go-text/typesetting v0.3.5 // indirect
 )
-
-replace github.com/yldm-tech/mygo-nodra => ../packages/nodra
-
-replace github.com/yldm-tech/mygo-nodra/mygo => ../packages/mygo
