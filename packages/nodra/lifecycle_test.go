@@ -12,8 +12,8 @@ func TestSubscribeOptionsImmediateAndEquality(t *testing.T) {
 	store := New(10)
 	var values []int
 	stop := store.SubscribeWith(SubscribeOptions[int]{Immediate: true, Equals: func(a, b int) bool { return a == b }}, func(snapshot Snapshot[int]) { values = append(values, snapshot.Value) })
-	store.Set(10)
-	store.Set(11)
+	requireNoError(t, store.Set(10))
+	requireNoError(t, store.Set(11))
 	stop()
 	if !reflect.DeepEqual(values, []int{10, 11}) {
 		t.Fatalf("values = %#v", values)

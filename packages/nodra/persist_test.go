@@ -39,7 +39,7 @@ func TestPersistenceLoadSave(t *testing.T) {
 	if err := p.Save(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	store.Set(map[string]int{"count": 9})
+	requireNoError(t, store.Set(map[string]int{"count": 9}))
 	if err := p.Load(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func TestAutoSaveWithErrorsReportsAndStops(t *testing.T) {
 	store := New(0)
 	p := NewPersistence(store, storage, jsonCodec[int]{})
 	errs, stop := p.AutoSaveWithErrors(context.Background())
-	store.Set(1)
+	requireNoError(t, store.Set(1))
 	select {
 	case err := <-errs:
 		if !errors.Is(err, storage.err) {
@@ -67,5 +67,5 @@ func TestAutoSaveWithErrorsReportsAndStops(t *testing.T) {
 		t.Fatal("expected persistence error")
 	}
 	stop()
-	store.Set(2)
+	requireNoError(t, store.Set(2))
 }

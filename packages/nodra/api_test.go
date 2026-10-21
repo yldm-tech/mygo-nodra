@@ -33,8 +33,10 @@ func TestDerivedGetterCachesAndSubscribes(t *testing.T) {
 	store := Create(apiState{Count: 2})
 	calls := 0
 	derived := Derive(store, func(state apiState) int { calls++; return state.Count * 2 }, func(a, b int) bool { return a == b })
-	if derived.Get() != 4 || derived.Get() != 4 || calls != 1 {
-		t.Fatalf("value=%d calls=%d", derived.Get(), calls)
+	// The second Get must be served from the cache without recomputing.
+	first, second := derived.Get(), derived.Get()
+	if first != 4 || second != 4 || calls != 1 {
+		t.Fatalf("values=%d,%d calls=%d", first, second, calls)
 	}
 	var values []int
 	stop := derived.Subscribe(func(value int) { values = append(values, value) })
