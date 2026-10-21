@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.0](https://github.com/yldm-tech/nodra/compare/v0.1.0...v0.2.0) (2026-10-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* the import path github.com/yldm-tech/nodra/mygo is removed. Replace mygo.SubscribeInvalidation(store, window) from that package with nodra.Invalidate(store, window) from github.com/yldm-tech/nodra.
+
+### Features
+
+* move MyGo invalidation into the root package as nodra.Invalidate ([#10](https://github.com/yldm-tech/nodra/issues/10)) ([3ed08e7](https://github.com/yldm-tech/nodra/commit/3ed08e7405971f75aa126695d819554a63cf2ebd))
+
 ## 0.1.0 (2026-10-21)
 
 
