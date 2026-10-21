@@ -15,29 +15,26 @@ jobs:
       issues: write
       pull-requests: write
     outputs:
-      paths_released: ${{ steps.release.outputs.paths_released }}
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
       - id: release
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
-          # Optional repository secret holding a PAT or GitHub App token. With it, release PRs trigger CI on their own; without it, the release-prs job starts CI on them.
+          # Optional repository secret holding a PAT or GitHub App token. With it, release PRs trigger CI on their own; without it, the release-pr-ci job starts CI on them.
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-  release-prs:
+  release-pr-ci:
     needs: release-please
     runs-on: ubuntu-latest
     permissions:
       actions: write
       contents: read
-      pull-requests: write
+      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: packages/nodra/go.mod
-          cache: false
       - run: .github/scripts/sync-release-prs.sh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -45,16 +42,7 @@ jobs:
 
   post-release:
     needs: release-please
-    if: needs.release-please.outputs.paths_released != '' && needs.release-please.outputs.paths_released != '[]'
-    strategy:
-      fail-fast: false
-      matrix:
-        path: ${{ fromJSON(needs.release-please.outputs.paths_released) }}
-    permissions:
-      actions: write
-      contents: write
-      pull-requests: write
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
     uses: ./.github/workflows/post-release.yml
     with:
-      path: ${{ matrix.path }}
-    secrets: inherit
+      version: ${{ needs.release-please.outputs.tag_name }}
