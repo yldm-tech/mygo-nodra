@@ -1,21 +1,17 @@
-# mygo-nodra
+# nodra
 
 **Nodra** is a production-oriented reactive state store for Go desktop applications. It gives MyGo apps Zustand-like ergonomics without coupling the core to MyGo, a renderer, or a persistence backend.
 
 ## Install
 
 ```sh
-go get github.com/yldm-tech/mygo-nodra/packages/nodra
+go get github.com/yldm-tech/nodra@latest
 ```
 
-For native MyGo window invalidation, also add the optional adapter:
-
-```sh
-go get github.com/yldm-tech/mygo-nodra/packages/mygo
-```
+The core store is the root package. For native MyGo window invalidation, also import the `mygo` subpackage, `github.com/yldm-tech/nodra/mygo`; it lives in the same module, so there is nothing else to install.
 
 ```go
-import nodra "github.com/yldm-tech/mygo-nodra/packages/nodra"
+import nodra "github.com/yldm-tech/nodra"
 
 tasks := nodra.New([]Task{})
 stop := tasks.SubscribeWith(nodra.SubscribeOptions[[]Task]{Immediate: true}, func(snapshot nodra.Snapshot[[]Task]) {
@@ -60,42 +56,42 @@ tasks.Update(func(value *[]Task) {
 ## Repository layout
 
 ```text
-packages/nodra/                 core store, history, persistence, and tests
-packages/mygo/                  MyGo native window adapter and tests
-examples/                       standalone and native MyGo examples
+*.go                           core store, history, persistence, and tests (package nodra)
+mygo/                          MyGo native window adapter and tests
+examples/                      standalone and native MyGo examples
 docs/architecture.md           lifecycle and threading details
-go.work                        workspace joining the three Go modules
 ```
+
+The repository is one Go module, `github.com/yldm-tech/nodra`, with a single `go.mod` at the root.
 
 ## Verification
 
 ```sh
-go test -race ./packages/nodra/... ./packages/mygo/... ./examples/...
-go vet ./packages/nodra/... ./packages/mygo/... ./examples/...
+go test -race ./...
+go vet ./...
 ```
 
 Run the native MyGo example with `go run ./examples/mygo`.
 
-CI also lints every module with golangci-lint and checks each one outside the workspace (`GOWORK=off`, see `.github/scripts/check-module.sh`): the `module` path must match its directory, `go mod tidy` must leave no diff, and `go build` / `go test` must pass against published versions only. A module that still requires another module of this repository at `v0.0.0` skips that check with a notice until the required module is released and the requirement is bumped.
+CI also runs golangci-lint, cross builds for Linux and Windows, and checks that the module path is `github.com/yldm-tech/nodra`, that there is no other `go.mod`, `go.work` or `replace` directive, and that `go mod tidy` leaves no diff.
 
 ## Releases
 
-`packages/nodra` and `packages/mygo` are released independently by [release-please](https://github.com/googleapis/release-please) as Go submodule tags, `packages/nodra/vX.Y.Z` and `packages/mygo/vX.Y.Z`, each with its own `CHANGELOG.md`. `examples` is not released.
+The module is released by [release-please](https://github.com/googleapis/release-please) with plain `vX.Y.Z` tags and one root `CHANGELOG.md`.
 
-1. Every push to `main` updates one release PR per module that has releasable commits since its last tag. Merging that PR tags the release and publishes a GitHub release.
-2. After a release, `post-release.yml` checks that the tag resolves through `proxy.golang.org`, then opens a `fix(deps)` PR that moves the modules requiring it onto the new tag.
-3. A release PR stays in draft while its module still requires another module of this repository at `v0.0.0`, so `packages/mygo` is released only after it requires a published core.
+1. Every push to `main` updates the release PR when there are releasable commits since the last tag. Merging that PR tags the release and publishes a GitHub release.
+2. After a release, `post-release.yml` checks that the tag resolves through `proxy.golang.org`.
 
-Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/), and only commits that touch a module's directory count toward its release:
+Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/):
 
 - `feat: ...` adds a feature (minor bump)
 - `fix: ...` fixes a bug (patch bump)
 - `feat!: ...` or a `BREAKING CHANGE:` footer marks a breaking change (minor bump while the version is below 1.0.0)
 - `docs`, `test`, `refactor`, `ci`, `build` and `chore` do not trigger a release
 
-Use a scope for the module where it helps, e.g. `fix(mygo): ...`.
+Use a scope where it helps, e.g. `fix(mygo): ...`.
 
-Release PRs and dependency bump PRs are pushed with the workflow's `GITHUB_TOKEN`. GitHub holds their `test` runs at "approval required", so the release workflow approves those runs itself (`.github/scripts/start-pr-ci.sh`). Setting a `RELEASE_PLEASE_TOKEN` repository secret (a fine-grained PAT or GitHub App token with contents and pull request write access) makes them trigger CI directly instead.
+Release PRs are pushed with the workflow's `GITHUB_TOKEN`. GitHub holds their `test` runs at "approval required", so the release workflow approves those runs itself (`.github/scripts/start-pr-ci.sh`). Setting a `RELEASE_PLEASE_TOKEN` repository secret (a fine-grained PAT or GitHub App token with contents and pull request write access) makes them trigger CI directly instead.
 
 
 ## Pinia/Zustand-style example

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/yldm-tech/mygo-nodra/packages/nodra"
+	"github.com/yldm-tech/nodra"
 )
 
 type AppState struct {

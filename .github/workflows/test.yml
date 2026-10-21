@@ -6,6 +6,8 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+env:
+  GOWORK: "off"
 jobs:
   go:
     runs-on: ubuntu-latest
@@ -13,57 +15,52 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: packages/nodra/go.mod
-      - run: go test -race ./packages/nodra/... ./packages/mygo/... ./examples/...
-      - run: go vet ./packages/nodra/... ./packages/mygo/... ./examples/...
-      - run: CGO_ENABLED=0 go build ./packages/nodra/... ./packages/mygo/... ./examples/...
-      - run: CGO_ENABLED=0 GOOS=linux go build ./packages/nodra/... ./packages/mygo/... ./examples/...
-      - run: CGO_ENABLED=0 GOOS=windows go build ./packages/nodra/... ./packages/mygo/... ./examples/...
-
-  modules:
-    runs-on: ubuntu-latest
-    outputs:
-      dirs: ${{ steps.list.outputs.dirs }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: packages/nodra/go.mod
-          cache: false
-      - id: list
-        run: echo "dirs=$(go work edit -json | jq -c '[.Use[].DiskPath | ltrimstr("./")]')" >> "$GITHUB_OUTPUT"
+          go-version-file: go.mod
+      - run: go test -race ./...
+      - run: go vet ./...
+      - run: CGO_ENABLED=0 GOOS=linux go build ./...
+      - run: CGO_ENABLED=0 GOOS=windows go build ./...
 
   lint:
-    needs: modules
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        dir: ${{ fromJSON(needs.modules.outputs.dirs) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: packages/nodra/go.mod
+          go-version-file: go.mod
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.15.0
-          working-directory: ${{ matrix.dir }}
 
-  # Builds and tests each module outside the go.work workspace, the way go get sees it.
-  standalone:
-    needs: modules
+  # Checks the module the way go get sees it: one go.mod at the repository root, no workspace, no replace directives, and a tidy go.mod/go.sum.
+  module:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        dir: ${{ fromJSON(needs.modules.outputs.dirs) }}
+    env:
+      MODULE: github.com/yldm-tech/nodra
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: packages/nodra/go.mod
-          cache-dependency-path: ${{ matrix.dir }}/go.mod
-      - run: .github/scripts/check-module.sh "$MODULE_DIR"
-        env:
-          MODULE_DIR: ${{ matrix.dir }}
+          go-version-file: go.mod
+      - name: Module path
+        run: |
+          got=$(go mod edit -json | jq -r .Module.Path)
+          if [[ "$got" != "$MODULE" ]]; then
+            echo "::error file=go.mod::module path is $got, want $MODULE"
+            exit 1
+          fi
+          echo "module path: $got"
+      - name: Single module, no local wiring
+        run: |
+          extra=$(git ls-files '*go.mod' '*go.work' | grep -vx go.mod || true)
+          if [[ -n "$extra" ]]; then
+            echo "::error::the repository is one module; remove these files: $extra"
+            exit 1
+          fi
+          replaces=$(go mod edit -json | jq -r '.Replace // [] | .[] | .Old.Path')
+          if [[ -n "$replaces" ]]; then
+            echo "::error file=go.mod::go.mod has replace directives, which consumers ignore: $replaces"
+            exit 1
+          fi
+      - name: go mod tidy leaves no diff
+        run: go mod tidy -diff

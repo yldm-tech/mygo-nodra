@@ -6,8 +6,8 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
-	nodra "github.com/yldm-tech/mygo-nodra/packages/nodra"
-	mygostore "github.com/yldm-tech/mygo-nodra/packages/mygo"
+	nodra "github.com/yldm-tech/nodra"
+	mygostore "github.com/yldm-tech/nodra/mygo"
 )
 
 type appState struct{ Count int }
