@@ -9,6 +9,6 @@ use (
 // Keep local development on workspace modules while the examples and adapter
 // continue to declare their pre-release v0.0.0 requirements.
 replace (
-	github.com/yldm-tech/mygo-nodra v0.0.0 => ./packages/nodra
-	github.com/yldm-tech/mygo-nodra/mygo v0.0.0 => ./packages/mygo
+	github.com/yldm-tech/mygo-nodra/packages/nodra v0.0.0 => ./packages/nodra
+	github.com/yldm-tech/mygo-nodra/packages/mygo v0.0.0 => ./packages/mygo
 )

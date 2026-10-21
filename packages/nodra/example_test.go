@@ -3,7 +3,7 @@ package nodra_test
 import (
 	"fmt"
 
-	"github.com/yldm-tech/mygo-nodra"
+	"github.com/yldm-tech/mygo-nodra/packages/nodra"
 )
 
 func ExampleStore_Update() {

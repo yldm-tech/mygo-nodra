@@ -5,17 +5,17 @@
 ## Install
 
 ```sh
-go get github.com/yldm-tech/mygo-nodra
+go get github.com/yldm-tech/mygo-nodra/packages/nodra
 ```
 
 For native MyGo window invalidation, also add the optional adapter:
 
 ```sh
-go get github.com/yldm-tech/mygo-nodra/mygo
+go get github.com/yldm-tech/mygo-nodra/packages/mygo
 ```
 
 ```go
-import nodra "github.com/yldm-tech/mygo-nodra"
+import nodra "github.com/yldm-tech/mygo-nodra/packages/nodra"
 
 tasks := nodra.New([]Task{})
 stop := tasks.SubscribeWith(nodra.SubscribeOptions[[]Task]{Immediate: true}, func(snapshot nodra.Snapshot[[]Task]) {
