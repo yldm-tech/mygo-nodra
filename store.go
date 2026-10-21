@@ -1,6 +1,4 @@
-// Package nodra provides concurrency-safe reactive state stores for Go UI
-// applications. The core is framework agnostic; UI adapters subscribe and
-// request their own redraw.
+// Package nodra is a state library for MyGo apps: concurrency-safe reactive stores whose snapshots drive native MyGo views. Invalidate redraws a window when its store publishes; the Store itself does not depend on a running MyGo app, so services and tests can use it as well.
 package nodra
 
 import (
