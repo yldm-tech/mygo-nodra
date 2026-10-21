@@ -2,7 +2,7 @@ name: test
 on:
   push:
   pull_request:
-  # Lets the release workflow run these checks on the release and dependency-bump PRs it opens: pushes made with GITHUB_TOKEN do not trigger workflows, but a dispatch does.
+  # Fallback for start-pr-ci.sh when the pull_request run of a PR pushed with GITHUB_TOKEN cannot be approved; also usable by hand.
   workflow_dispatch:
 permissions:
   contents: read

@@ -108,7 +108,7 @@ jobs:
         if: steps.bump.outputs.changed != ''
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
-          DISPATCH_CI: ${{ secrets.RELEASE_PLEASE_TOKEN == '' }}
+          START_PR_CI: ${{ secrets.RELEASE_PLEASE_TOKEN == '' }}
           MODULE: ${{ needs.verify-proxy.outputs.module }}
           RELEASED_PATH: ${{ inputs.path }}
           VERSION: ${{ needs.verify-proxy.outputs.version }}
@@ -134,6 +134,6 @@ jobs:
           if [[ -z "$(gh pr list --head "$branch" --state open --json number --jq '.[].number')" ]]; then
             gh pr create --base main --head "$branch" --title "$title" --body-file "$body"
           fi
-          if [[ "$DISPATCH_CI" == "true" ]]; then
-            gh workflow run test.yml --ref "$branch"
+          if [[ "$START_PR_CI" == "true" ]]; then
+            .github/scripts/start-pr-ci.sh "$branch" "$(git rev-parse HEAD)"
           fi

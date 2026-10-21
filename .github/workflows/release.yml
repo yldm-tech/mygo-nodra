@@ -20,7 +20,7 @@ jobs:
       - id: release
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
-          # Optional repository secret holding a PAT or GitHub App token. With it, release PRs trigger CI on their own; without it, the release-prs job dispatches CI on them.
+          # Optional repository secret holding a PAT or GitHub App token. With it, release PRs trigger CI on their own; without it, the release-prs job starts CI on them.
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
@@ -41,7 +41,7 @@ jobs:
       - run: .github/scripts/sync-release-prs.sh
         env:
           GH_TOKEN: ${{ github.token }}
-          DISPATCH_CI: ${{ secrets.RELEASE_PLEASE_TOKEN == '' }}
+          START_PR_CI: ${{ secrets.RELEASE_PLEASE_TOKEN == '' }}
 
   post-release:
     needs: release-please

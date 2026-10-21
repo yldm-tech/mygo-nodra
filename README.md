@@ -95,7 +95,7 @@ Commit messages follow [Conventional Commits](https://www.conventionalcommits.or
 
 Use a scope for the module where it helps, e.g. `fix(mygo): ...`.
 
-Release PRs and dependency bump PRs are pushed with the workflow's `GITHUB_TOKEN`, which does not trigger workflows, so the release workflow dispatches the `test` workflow on them. Setting a `RELEASE_PLEASE_TOKEN` repository secret (a fine-grained PAT or GitHub App token with contents and pull request write access) makes them trigger CI directly instead.
+Release PRs and dependency bump PRs are pushed with the workflow's `GITHUB_TOKEN`. GitHub holds their `test` runs at "approval required", so the release workflow approves those runs itself (`.github/scripts/start-pr-ci.sh`). Setting a `RELEASE_PLEASE_TOKEN` repository secret (a fine-grained PAT or GitHub App token with contents and pull request write access) makes them trigger CI directly instead.
 
 
 ## Pinia/Zustand-style example
