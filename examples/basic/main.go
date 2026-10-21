@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"log"
+
 	"github.com/yldm-tech/mygo-nodra/packages/nodra"
 )
 
@@ -15,9 +17,18 @@ func main() {
 	store.Subscribe(func(snapshot nodra.Snapshot[AppState]) {
 		fmt.Printf("version=%d state=%+v\n", snapshot.Version, snapshot.Value)
 	})
-	store.Update(func(state *AppState) { state.Count++ })
-	store.Batch(func() {
-		store.Update(func(state *AppState) { state.Count++ })
-		store.Update(func(state *AppState) { state.Filter = "active" })
+	if err := store.Update(func(state *AppState) { state.Count++ }); err != nil {
+		log.Fatal(err)
+	}
+	err := store.Batch(func() {
+		if err := store.Update(func(state *AppState) { state.Count++ }); err != nil {
+			log.Fatal(err)
+		}
+		if err := store.Update(func(state *AppState) { state.Filter = "active" }); err != nil {
+			log.Fatal(err)
+		}
 	})
+	if err != nil {
+		log.Fatal(err)
+	}
 }

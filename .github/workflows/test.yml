@@ -2,12 +2,16 @@ name: test
 on:
   push:
   pull_request:
+  # Lets the release workflow run these checks on the release and dependency-bump PRs it opens: pushes made with GITHUB_TOKEN do not trigger workflows, but a dispatch does.
+  workflow_dispatch:
+permissions:
+  contents: read
 jobs:
   go:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/nodra/go.mod
       - run: go test -race ./packages/nodra/... ./packages/mygo/... ./examples/...
@@ -15,3 +19,51 @@ jobs:
       - run: CGO_ENABLED=0 go build ./packages/nodra/... ./packages/mygo/... ./examples/...
       - run: CGO_ENABLED=0 GOOS=linux go build ./packages/nodra/... ./packages/mygo/... ./examples/...
       - run: CGO_ENABLED=0 GOOS=windows go build ./packages/nodra/... ./packages/mygo/... ./examples/...
+
+  modules:
+    runs-on: ubuntu-latest
+    outputs:
+      dirs: ${{ steps.list.outputs.dirs }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/nodra/go.mod
+          cache: false
+      - id: list
+        run: echo "dirs=$(go work edit -json | jq -c '[.Use[].DiskPath | ltrimstr("./")]')" >> "$GITHUB_OUTPUT"
+
+  lint:
+    needs: modules
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: ${{ fromJSON(needs.modules.outputs.dirs) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/nodra/go.mod
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.15.0
+          working-directory: ${{ matrix.dir }}
+
+  # Builds and tests each module outside the go.work workspace, the way go get sees it.
+  standalone:
+    needs: modules
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: ${{ fromJSON(needs.modules.outputs.dirs) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/nodra/go.mod
+          cache-dependency-path: ${{ matrix.dir }}/go.mod
+      - run: .github/scripts/check-module.sh "$MODULE_DIR"
+        env:
+          MODULE_DIR: ${{ matrix.dir }}

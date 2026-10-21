@@ -12,15 +12,23 @@ type counterState struct {
 	Name  string
 }
 
+// requireNoError fails the test immediately when a store operation that is expected to succeed returns an error.
+func requireNoError(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestStorePublishesSnapshotsAfterUpdates(t *testing.T) {
 	store := New(counterState{Count: 1})
 	var got []Snapshot[counterState]
 	unsubscribe := store.Subscribe(func(snapshot Snapshot[counterState]) { got = append(got, snapshot) })
 
-	store.Update(func(state *counterState) { state.Count++ })
-	store.Set(counterState{Count: 3, Name: "done"})
+	requireNoError(t, store.Update(func(state *counterState) { state.Count++ }))
+	requireNoError(t, store.Set(counterState{Count: 3, Name: "done"}))
 	unsubscribe()
-	store.Update(func(state *counterState) { state.Count++ })
+	requireNoError(t, store.Update(func(state *counterState) { state.Count++ }))
 
 	if len(got) != 2 {
 		t.Fatalf("notifications = %d, want 2", len(got))
@@ -41,11 +49,14 @@ func TestBatchCoalescesNestedUpdates(t *testing.T) {
 	var got []Snapshot[int]
 	store.Subscribe(func(snapshot Snapshot[int]) { got = append(got, snapshot) })
 
-	store.Batch(func() {
-		store.Set(1)
-		store.Batch(func() { store.Set(2); store.Set(3) })
-		store.Set(4)
-	})
+	requireNoError(t, store.Batch(func() {
+		requireNoError(t, store.Set(1))
+		requireNoError(t, store.Batch(func() {
+			requireNoError(t, store.Set(2))
+			requireNoError(t, store.Set(3))
+		}))
+		requireNoError(t, store.Set(4))
+	}))
 
 	if !reflect.DeepEqual(got, []Snapshot[int]{{Value: 4, Version: 1}}) {
 		t.Fatalf("snapshots = %#v", got)
@@ -58,9 +69,9 @@ func TestSelectorOnlyPublishesWhenSelectionChanges(t *testing.T) {
 	unsubscribe := SubscribeSelector(store, func(state counterState) int { return state.Count }, func(value int) { got = append(got, value) })
 	defer unsubscribe()
 
-	store.Update(func(state *counterState) { state.Name = "b" })
-	store.Update(func(state *counterState) { state.Count = 2 })
-	store.Update(func(state *counterState) { state.Count = 2 })
+	requireNoError(t, store.Update(func(state *counterState) { state.Name = "b" }))
+	requireNoError(t, store.Update(func(state *counterState) { state.Count = 2 }))
+	requireNoError(t, store.Update(func(state *counterState) { state.Count = 2 }))
 
 	if !reflect.DeepEqual(got, []int{2}) {
 		t.Fatalf("selected values = %#v", got)
@@ -71,7 +82,7 @@ func TestWatchStopsWithContext(t *testing.T) {
 	store := New(0)
 	ctx, cancel := context.WithCancel(context.Background())
 	updates := store.Watch(ctx, 1)
-	store.Set(1)
+	requireNoError(t, store.Set(1))
 	select {
 	case snapshot := <-updates:
 		if snapshot.Value != 1 {
@@ -81,7 +92,7 @@ func TestWatchStopsWithContext(t *testing.T) {
 		t.Fatal("timed out waiting for update")
 	}
 	cancel()
-	store.Set(2)
+	requireNoError(t, store.Set(2))
 	for range updates {
 	}
 }
@@ -96,7 +107,10 @@ func TestStoreSupportsConcurrentUpdates(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for range updates {
-				store.Update(func(value *int) { *value++ })
+				if err := store.Update(func(value *int) { *value++ }); err != nil {
+					t.Error(err)
+					return
+				}
 			}
 		}()
 	}
