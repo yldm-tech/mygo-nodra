@@ -1,0 +1,139 @@
+name: post-release
+on:
+  workflow_call:
+    inputs:
+      path:
+        description: Released module directory, e.g. packages/nodra
+        type: string
+        required: true
+      version:
+        description: Released version such as v0.1.0; defaults to the version in .release-please-manifest.json
+        type: string
+        required: false
+  # Manual re-run for a release whose follow-up failed, e.g. when the proxy was slow.
+  workflow_dispatch:
+    inputs:
+      path:
+        description: Released module directory
+        type: choice
+        options: [packages/nodra, packages/mygo]
+        required: true
+      version:
+        description: Released version such as v0.1.0; defaults to the version in .release-please-manifest.json
+        type: string
+        required: false
+permissions:
+  contents: read
+env:
+  REPO_MODULE: github.com/yldm-tech/mygo-nodra
+jobs:
+  # Proves the tag is a valid Go submodule tag that consumers can fetch: listed and downloaded through proxy.golang.org, checksum verified against sum.golang.org.
+  verify-proxy:
+    runs-on: ubuntu-latest
+    outputs:
+      module: ${{ steps.version.outputs.module }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/nodra/go.mod
+          cache: false
+      - id: version
+        env:
+          RELEASED_PATH: ${{ inputs.path }}
+          RELEASED_VERSION: ${{ inputs.version }}
+        run: |
+          version=${RELEASED_VERSION:-v$(jq -r --arg p "$RELEASED_PATH" '.[$p]' .release-please-manifest.json)}
+          if [[ ! "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "::error::no released version for $RELEASED_PATH (got $version)"
+            exit 1
+          fi
+          echo "module=$REPO_MODULE/$RELEASED_PATH" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag $RELEASED_PATH/$version"
+      - name: Resolve through proxy.golang.org
+        working-directory: ${{ runner.temp }}
+        env:
+          GOWORK: "off"
+          GOPROXY: https://proxy.golang.org
+          GOFLAGS: -modcacherw
+          MODULE: ${{ steps.version.outputs.module }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # The proxy fetches a new tag on first request; retry for a few minutes in case GitHub has not served it yet.
+          for attempt in $(seq 1 20); do
+            if go list -m "$MODULE@$VERSION"; then
+              go mod download -json "$MODULE@$VERSION"
+              exit 0
+            fi
+            echo "attempt $attempt: $MODULE@$VERSION not resolvable through the proxy yet"
+            sleep 15
+          done
+          echo "::error::$MODULE@$VERSION does not resolve through proxy.golang.org"
+          exit 1
+
+  # Opens a PR that moves every module requiring the released one onto the new tag, so they build outside the workspace.
+  bump-dependents:
+    needs: verify-proxy
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/nodra/go.mod
+          cache: false
+      - name: Bump requirements
+        id: bump
+        env:
+          RELEASED_PATH: ${{ inputs.path }}
+          VERSION: ${{ needs.verify-proxy.outputs.version }}
+        run: |
+          changed=$(.github/scripts/bump-requirement.sh "$RELEASED_PATH" "$VERSION")
+          for dir in $changed; do
+            .github/scripts/check-module.sh "$dir"
+          done
+          if git diff --quiet; then
+            echo "nothing requires $RELEASED_PATH below $VERSION"
+          fi
+          echo "changed=${changed//$'\n'/ }" >> "$GITHUB_OUTPUT"
+      - name: Open PR
+        if: steps.bump.outputs.changed != ''
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          DISPATCH_CI: ${{ secrets.RELEASE_PLEASE_TOKEN == '' }}
+          MODULE: ${{ needs.verify-proxy.outputs.module }}
+          RELEASED_PATH: ${{ inputs.path }}
+          VERSION: ${{ needs.verify-proxy.outputs.version }}
+          CHANGED: ${{ steps.bump.outputs.changed }}
+        run: |
+          if git diff --quiet; then
+            echo "requirements already at $VERSION"
+            exit 0
+          fi
+          branch="deps/${RELEASED_PATH//\//-}-$VERSION"
+          title="fix(deps): require $RELEASED_PATH $VERSION"
+          body=$(mktemp)
+          {
+            echo "$RELEASED_PATH/$VERSION is published and resolves through proxy.golang.org. This moves the modules that require it onto that tag (\`GOWORK=off go get $MODULE@$VERSION\`, \`go mod tidy\`), so they build outside the workspace and the standalone CI check is enforced for them."
+            echo
+            echo "Changed modules: $CHANGED"
+          } > "$body"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git commit -am "$title"
+          git push --force origin "$branch"
+          if [[ -z "$(gh pr list --head "$branch" --state open --json number --jq '.[].number')" ]]; then
+            gh pr create --base main --head "$branch" --title "$title" --body-file "$body"
+          fi
+          if [[ "$DISPATCH_CI" == "true" ]]; then
+            gh workflow run test.yml --ref "$branch"
+          fi

@@ -76,6 +76,27 @@ go vet ./packages/nodra/... ./packages/mygo/... ./examples/...
 
 Run the native MyGo example with `go run ./examples/mygo`.
 
+CI also lints every module with golangci-lint and checks each one outside the workspace (`GOWORK=off`, see `.github/scripts/check-module.sh`): the `module` path must match its directory, `go mod tidy` must leave no diff, and `go build` / `go test` must pass against published versions only. A module that still requires another module of this repository at `v0.0.0` skips that check with a notice until the required module is released and the requirement is bumped.
+
+## Releases
+
+`packages/nodra` and `packages/mygo` are released independently by [release-please](https://github.com/googleapis/release-please) as Go submodule tags, `packages/nodra/vX.Y.Z` and `packages/mygo/vX.Y.Z`, each with its own `CHANGELOG.md`. `examples` is not released.
+
+1. Every push to `main` updates one release PR per module that has releasable commits since its last tag. Merging that PR tags the release and publishes a GitHub release.
+2. After a release, `post-release.yml` checks that the tag resolves through `proxy.golang.org`, then opens a `fix(deps)` PR that moves the modules requiring it onto the new tag.
+3. A release PR stays in draft while its module still requires another module of this repository at `v0.0.0`, so `packages/mygo` is released only after it requires a published core.
+
+Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/), and only commits that touch a module's directory count toward its release:
+
+- `feat: ...` adds a feature (minor bump)
+- `fix: ...` fixes a bug (patch bump)
+- `feat!: ...` or a `BREAKING CHANGE:` footer marks a breaking change (minor bump while the version is below 1.0.0)
+- `docs`, `test`, `refactor`, `ci`, `build` and `chore` do not trigger a release
+
+Use a scope for the module where it helps, e.g. `fix(mygo): ...`.
+
+Release PRs and dependency bump PRs are pushed with the workflow's `GITHUB_TOKEN`, which does not trigger workflows, so the release workflow dispatches the `test` workflow on them. Setting a `RELEASE_PLEASE_TOKEN` repository secret (a fine-grained PAT or GitHub App token with contents and pull request write access) makes them trigger CI directly instead.
+
 
 ## Pinia/Zustand-style example
 
