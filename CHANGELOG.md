@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.0 (2026-10-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* publish as one module at the repository root, github.com/yldm-tech/nodra ([#8](https://github.com/yldm-tech/nodra/issues/8))
+
+### Features
+
+* publish as one module at the repository root, github.com/yldm-tech/nodra ([#8](https://github.com/yldm-tech/nodra/issues/8)) ([e9ace62](https://github.com/yldm-tech/nodra/commit/e9ace62137e470e36a92d2e94580ef72058a883f))
+
 ## [packages/nodra 0.1.0 and packages/mygo 0.1.0](https://github.com/yldm-tech/nodra/releases/tag/packages%2Fnodra%2Fv0.1.0) (2026-10-21)
 
 Superseded. These were released as two separate modules, `github.com/yldm-tech/mygo-nodra/packages/nodra` (tag `packages/nodra/v0.1.0`) and `github.com/yldm-tech/mygo-nodra/packages/mygo` (tag `packages/mygo/v0.1.0`), from the repository before it was renamed to `yldm-tech/nodra`. The code now lives in the single module `github.com/yldm-tech/nodra`: import the core as `github.com/yldm-tech/nodra` and the MyGo adapter as `github.com/yldm-tech/nodra/mygo`. The old tags stay in place because the Go module proxy has cached them, but they receive no further releases.
