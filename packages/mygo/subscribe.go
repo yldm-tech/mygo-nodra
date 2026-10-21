@@ -4,7 +4,7 @@ package mygo
 
 import (
 	"github.com/egoist/mygo"
-	"github.com/yldm-tech/mygo-nodra"
+	"github.com/yldm-tech/mygo-nodra/packages/nodra"
 )
 
 // SubscribeInvalidation requests a new native frame whenever store publishes

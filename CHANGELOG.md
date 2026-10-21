@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Breaking:** module paths now match their directories: import the core as `github.com/yldm-tech/mygo-nodra/packages/nodra` (was `github.com/yldm-tech/mygo-nodra`) and the MyGo integration as `github.com/yldm-tech/mygo-nodra/packages/mygo` (was `github.com/yldm-tech/mygo-nodra/mygo`). Since the monorepo move, `go get` could not resolve either old path.
 - Added store lifecycle and `ErrClosed`.
 - Added immediate and equality-aware subscriptions.
 - Added rollback-safe `UpdateErr`.

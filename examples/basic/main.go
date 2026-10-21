@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"github.com/yldm-tech/mygo-nodra"
+	"github.com/yldm-tech/mygo-nodra/packages/nodra"
 )
 
 type AppState struct {

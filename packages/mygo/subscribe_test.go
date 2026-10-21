@@ -3,7 +3,7 @@ package mygo
 import (
 	"testing"
 
-	"github.com/yldm-tech/mygo-nodra"
+	"github.com/yldm-tech/mygo-nodra/packages/nodra"
 )
 
 func TestSubscribeInvalidationHandlesNilInputs(t *testing.T) {
