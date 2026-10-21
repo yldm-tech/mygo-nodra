@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs after release-please on main. For each component's open release PR:
 # - keeps it in draft while the component still requires another module of this repository at v0.0.0, because a tag cut from it would not build for consumers; marks it ready again once the requirement is bumped;
-# - when DISPATCH_CI is true (release-please pushed with GITHUB_TOKEN, which triggers no workflows), dispatches the test workflow on the PR head unless it already ran there.
+# - when START_PR_CI is true (release-please pushed with GITHUB_TOKEN), starts the test workflow on the PR head through start-pr-ci.sh.
 set -euo pipefail
 
 repo_module=github.com/yldm-tech/mygo-nodra
@@ -27,10 +27,7 @@ for dir in $dirs; do
 		gh pr comment "$number" --body "Marked ready: $dir no longer requires an unreleased module of this repository."
 	fi
 
-	if [[ "${DISPATCH_CI:-false}" == "true" ]]; then
-		runs=$(gh run list --workflow test.yml --commit "$head_sha" --json databaseId --jq length)
-		if [[ "$runs" == "0" ]]; then
-			gh workflow run test.yml --ref "$branch"
-		fi
+	if [[ "${START_PR_CI:-false}" == "true" ]]; then
+		.github/scripts/start-pr-ci.sh "$branch" "$head_sha"
 	fi
 done
