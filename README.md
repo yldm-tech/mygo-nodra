@@ -1,6 +1,6 @@
 # nodra
 
-**Nodra** is a production-oriented reactive state store for Go desktop applications. It gives MyGo apps Zustand-like ergonomics without coupling the core to MyGo, a renderer, or a persistence backend.
+**Nodra** is a production-oriented reactive state store for Go desktop applications. It is a state library for [MyGo](https://github.com/egoist/mygo) apps with Zustand-like ergonomics, and does not tie your state to a renderer or a persistence backend.
 
 ## Install
 
@@ -8,14 +8,26 @@
 go get github.com/yldm-tech/nodra@latest
 ```
 
-The core store is the root package. For native MyGo window invalidation, also import the `mygo` subpackage, `github.com/yldm-tech/nodra/mygo`; it lives in the same module, so there is nothing else to install.
+Everything is in the root package, `github.com/yldm-tech/nodra`.
+
+## MyGo usage
+
+Redraw a native MyGo window whenever its store publishes:
+
+```go
+stop := nodra.Invalidate(store, window)
+```
+
+Call `stop` when the window closes; `go run ./examples/mygo` shows the whole app.
+
+## Core usage
 
 ```go
 import nodra "github.com/yldm-tech/nodra"
 
 tasks := nodra.New([]Task{})
 stop := tasks.SubscribeWith(nodra.SubscribeOptions[[]Task]{Immediate: true}, func(snapshot nodra.Snapshot[[]Task]) {
-	window.Invalidate()
+	log.Printf("%d tasks", len(snapshot.Value))
 })
 defer stop()
 
@@ -43,7 +55,7 @@ tasks.Update(func(value *[]Task) {
 - Ready-to-use `FileStorage` and `JSONCodec[T]` with atomic file replacement
 - `AutoSaveWithErrors` for observable persistence failures
 - Context-bound, bounded `Watch` streams that close with the store
-- `mygo` adapter package for `Window.Invalidate`
+- `Invalidate` to redraw a MyGo window when a store publishes
 
 ## Design guarantees
 
@@ -56,8 +68,7 @@ tasks.Update(func(value *[]Task) {
 ## Repository layout
 
 ```text
-*.go                           core store, history, persistence, and tests (package nodra)
-mygo/                          MyGo native window adapter and tests
+*.go                           store, history, persistence, MyGo invalidation, and tests (package nodra)
 examples/                      standalone and native MyGo examples
 docs/architecture.md           lifecycle and threading details
 ```
@@ -89,7 +100,7 @@ Commit messages follow [Conventional Commits](https://www.conventionalcommits.or
 - `feat!: ...` or a `BREAKING CHANGE:` footer marks a breaking change (minor bump while the version is below 1.0.0)
 - `docs`, `test`, `refactor`, `ci`, `build` and `chore` do not trigger a release
 
-Use a scope where it helps, e.g. `fix(mygo): ...`.
+Use a scope where it helps, e.g. `fix(persist): ...`.
 
 Release PRs are pushed with the workflow's `GITHUB_TOKEN`. GitHub holds their `test` runs at "approval required", so the release workflow approves those runs itself (`.github/scripts/start-pr-ci.sh`). Setting a `RELEASE_PLEASE_TOKEN` repository secret (a fine-grained PAT or GitHub App token with contents and pull request write access) makes them trigger CI directly instead.
 
@@ -122,6 +133,4 @@ counter := nodra.Define("counter", func() Counter {
 store := counter.New()
 ```
 
-Each call to `New` creates an independent instance with the same initial-state
-factory. The ID is available to mutation and action observers for logging and
-devtools integrations.
+Each call to `New` creates an independent instance with the same initial-state factory. The ID is available to mutation and action observers for logging and devtools integrations.

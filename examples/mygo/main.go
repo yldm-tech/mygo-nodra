@@ -7,7 +7,6 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	nodra "github.com/yldm-tech/nodra"
-	mygostore "github.com/yldm-tech/nodra/mygo"
 )
 
 type appState struct{ Count int }
@@ -33,7 +32,7 @@ func main() {
 				})
 			})
 		})})
-		stop := mygostore.SubscribeInvalidation(store, window)
+		stop := nodra.Invalidate(store, window)
 		window.OnClosed(func() { stop() })
 	})
 	if err := mygo.App.Run(); err != nil {
