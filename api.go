@@ -16,34 +16,51 @@ type SelectorOptions[V comparable] struct {
 }
 
 // SubscribeSelectorWith calls fn with current and previous selected values.
+// It catches up after registration and ignores obsolete computations. Callbacks
+// run on writer goroutines and may overlap, as with Store.Subscribe.
 func SubscribeSelectorWith[T any, V comparable](store *Store[T], selector func(T) V, fn func(current, previous V), options SelectorOptions[V]) func() {
 	if store == nil || selector == nil || fn == nil {
 		return func() {}
 	}
 	var mu sync.Mutex
-	previous := selector(store.Get())
-	first := true
+	initial := store.Snapshot()
+	previous := selector(initial.Value)
+	version := initial.Version
 	if options.Immediate {
 		var zero V
 		fn(previous, zero)
-		first = false
 	}
-	return store.Subscribe(func(snapshot Snapshot[T]) {
+	changed := func(snapshot Snapshot[T]) {
+		mu.Lock()
+		stale := snapshot.Version <= version
+		mu.Unlock()
+		if stale {
+			return
+		}
 		current := selector(snapshot.Value)
 		mu.Lock()
+		// Another writer may have published while the selector was running.
+		if snapshot.Version <= version {
+			mu.Unlock()
+			return
+		}
+		version = snapshot.Version
 		old := previous
 		equal := old == current
 		if options.Equals != nil {
 			equal = options.Equals(old, current)
 		}
 		previous = current
-		skip := first && !options.Immediate
-		first = false
 		mu.Unlock()
-		if !equal && !skip {
+		if !equal {
 			fn(current, old)
 		}
-	})
+	}
+	stop := store.Subscribe(changed)
+	// Catch changes between reading the initial value and registering. The
+	// version check also avoids recomputing when a callback already caught up.
+	changed(store.Snapshot())
+	return stop
 }
 
 // Derived is a memoized getter derived from a store. It recomputes when the
@@ -54,6 +71,7 @@ type Derived[T any, V any] struct {
 	equals    func(V, V) bool
 	mu        sync.RWMutex
 	value     V
+	version   uint64
 	listeners map[uint64]func(V)
 	nextID    uint64
 	stop      func()
@@ -66,11 +84,26 @@ func Derive[T any, V any](store *Store[T], selector func(T) V, equals func(V, V)
 		d.closed = true
 		return d
 	}
-	d.value = selector(store.Get())
-	d.stop = store.Subscribe(func(snapshot Snapshot[T]) {
+	initial := store.Snapshot()
+	d.value = selector(initial.Value)
+	d.version = initial.Version
+	changed := func(snapshot Snapshot[T]) {
+		d.mu.RLock()
+		stale := d.closed || snapshot.Version <= d.version
+		d.mu.RUnlock()
+		if stale {
+			return
+		}
 		next := selector(snapshot.Value)
 		d.mu.Lock()
-		if d.closed || (d.equals != nil && d.equals(d.value, next)) {
+		if d.closed || snapshot.Version <= d.version {
+			d.mu.Unlock()
+			return
+		}
+		// Advance even when the projection is equal, so an older computation
+		// cannot overwrite this version with a different value later.
+		d.version = snapshot.Version
+		if d.equals != nil && d.equals(d.value, next) {
 			d.mu.Unlock()
 			return
 		}
@@ -83,7 +116,9 @@ func Derive[T any, V any](store *Store[T], selector func(T) V, equals func(V, V)
 		for _, fn := range listeners {
 			fn(next)
 		}
-	})
+	}
+	d.stop = store.Subscribe(changed)
+	changed(store.Snapshot())
 	return d
 }
 func (d *Derived[T, V]) Get() V { d.mu.RLock(); defer d.mu.RUnlock(); return d.value }

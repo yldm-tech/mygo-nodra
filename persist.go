@@ -23,7 +23,10 @@ type Codec[T any] interface {
 
 // Persistence connects a store to a Storage and Codec. It is explicit by
 // default: call Load at startup and Save after successful application actions.
+// Save calls on the same instance are serialized, including state capture and
+// encoding. Separate instances sharing a storage destination are not coordinated.
 type Persistence[T any] struct {
+	saveMu  sync.Mutex
 	store   *Store[T]
 	storage Storage
 	codec   Codec[T]
@@ -50,6 +53,10 @@ func (p *Persistence[T]) Save(ctx context.Context) error {
 	if p == nil || p.store == nil || p.storage == nil || p.codec == nil {
 		return ErrInvalidPersistence
 	}
+	// Capture state only after taking the lock: a delayed older save must not
+	// overwrite a newer one, even when encoding itself is slow.
+	p.saveMu.Lock()
+	defer p.saveMu.Unlock()
 	data, err := p.codec.Encode(p.store.Get())
 	if err != nil {
 		return err
@@ -68,6 +75,7 @@ func (p *Persistence[T]) AutoSave(ctx context.Context) func() {
 
 // AutoSaveWithErrors subscribes to updates and reports persistence failures on
 // a buffered channel. The channel closes when ctx is canceled or stop is called.
+// Stop releases the background watcher but does not wait for in-flight saves.
 func (p *Persistence[T]) AutoSaveWithErrors(ctx context.Context) (<-chan error, func()) {
 	if p == nil || p.store == nil {
 		ch := make(chan error)
@@ -81,8 +89,18 @@ func (p *Persistence[T]) AutoSaveWithErrors(ctx context.Context) (<-chan error, 
 	var once sync.Once
 	var errMu sync.Mutex
 	closed := false
+	stopped := make(chan struct{})
 	var unsubscribe func()
-	stop := func() { once.Do(func() { unsubscribe(); errMu.Lock(); closed = true; close(errs); errMu.Unlock() }) }
+	stop := func() {
+		once.Do(func() {
+			unsubscribe()
+			errMu.Lock()
+			closed = true
+			close(errs)
+			errMu.Unlock()
+			close(stopped)
+		})
+	}
 	unsubscribe = p.store.Subscribe(func(Snapshot[T]) {
 		if err := p.Save(ctx); err != nil {
 			errMu.Lock()
@@ -98,6 +116,8 @@ func (p *Persistence[T]) AutoSaveWithErrors(ctx context.Context) (<-chan error, 
 	})
 	go func() {
 		select {
+		case <-stopped:
+			return
 		case <-ctx.Done():
 			stop()
 		case <-p.store.done:

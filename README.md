@@ -39,7 +39,7 @@ tasks.Update(func(value *[]Task) {
 ## What is included
 
 - Generic, concurrency-safe `Store[T]` with versioned snapshots
-- `Set`, `Update`, and `UpdateErr` with rollback on returned errors and panics
+- `Set`, `Update`, and `UpdateErr` with value rollback on returned errors and panics
 - `Subscribe` and `SubscribeWith` with immediate delivery and per-subscriber equality
 - `SubscribeSelector` and `SubscribeSelectorWith` for focused updates with previous values
 - `Derive` for memoized computed/getter values
@@ -62,7 +62,9 @@ tasks.Update(func(value *[]Task) {
 - Store locks are released before user listeners run, so listeners can safely read or update the same store.
 - Versions increment once per published update, not once per mutation inside a batch.
 - Closing a store is permanent; updates return `nodra.ErrClosed` and active watches terminate.
-- Values are not deep copied. Use immutable value conventions or copy slices and maps at the update boundary.
+- Values are not deep copied, including snapshots, initial values and rollback values. Copy slices, maps and pointed-to data before changing them; mutating shared data in place also changes older snapshots and cannot be undone by rollback or `Reset`.
+- Selectors and derived getters catch up with changes during initialization and ignore computations from older versions once a newer version has been processed. Callbacks still run on writer goroutines and may run concurrently.
+- Concurrent `Save` calls on one `Persistence` instance are serialized from state capture through storage write, so a delayed save cannot overwrite a newer save. Keep one persistence instance per destination; `Load` is intended for startup before concurrent writes.
 - Watch channels are best effort and bounded; slow consumers may skip intermediate snapshots.
 
 ## Repository layout

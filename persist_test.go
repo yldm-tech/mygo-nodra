@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
+	"testing/synctest"
+	"time"
 )
 
 type memoryStorage struct {
@@ -68,4 +71,112 @@ func TestAutoSaveWithErrorsReportsAndStops(t *testing.T) {
 	}
 	stop()
 	requireNoError(t, store.Set(2))
+}
+
+// gateCodec pauses the first encoding, before the storage write begins.
+type gateCodec struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (c gateCodec) Encode(value int) ([]byte, error) {
+	if value == 1 {
+		close(c.entered)
+		<-c.release
+	}
+	return json.Marshal(value)
+}
+func (gateCodec) Decode(data []byte) (int, error) {
+	var value int
+	err := json.Unmarshal(data, &value)
+	return value, err
+}
+
+type lockedStorage struct {
+	mu   sync.Mutex
+	data []byte
+}
+
+func (s *lockedStorage) Load(context.Context) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]byte(nil), s.data...), nil
+}
+func (s *lockedStorage) Save(_ context.Context, data []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data = append([]byte(nil), data...)
+	return nil
+}
+
+func TestPersistenceConcurrentSavesKeepLatestState(t *testing.T) {
+	store := New(1)
+	codec := gateCodec{entered: make(chan struct{}), release: make(chan struct{})}
+	storage := &lockedStorage{}
+	p := NewPersistence(store, storage, codec)
+	first, second := make(chan error, 1), make(chan error, 1)
+	go func() { first <- p.Save(context.Background()) }()
+	<-codec.entered
+	requireNoError(t, store.Set(2))
+	go func() { second <- p.Save(context.Background()) }()
+	// Give a competing save an opportunity to finish. With serialization it
+	// waits behind the blocked encode; without it the old write wins last.
+	var secondErr error
+	secondFinished := false
+	select {
+	case secondErr = <-second:
+		secondFinished = true
+	case <-time.After(50 * time.Millisecond):
+	}
+	// A queued save must read state after acquiring its serialization lock.
+	requireNoError(t, store.Set(3))
+	close(codec.release)
+	requireNoError(t, <-first)
+	if !secondFinished {
+		secondErr = <-second
+	}
+	requireNoError(t, secondErr)
+	data, err := storage.Load(context.Background())
+	requireNoError(t, err)
+	if string(data) != "3" {
+		t.Fatalf("persisted = %s, want 3", data)
+	}
+}
+
+func TestAutoSaveWithErrorsReleasesWatcher(t *testing.T) {
+	for _, shutdown := range []string{"stop", "cancel", "close"} {
+		t.Run(shutdown, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				store := New(0)
+				ctx := context.Background()
+				cancel := func() {}
+				if shutdown == "cancel" {
+					ctx, cancel = context.WithCancel(ctx)
+				}
+				defer cancel()
+				p := NewPersistence(store, &memoryStorage{}, jsonCodec[int]{})
+				errs, stop := p.AutoSaveWithErrors(ctx)
+				switch shutdown {
+				case "stop":
+					stop()
+				case "cancel":
+					cancel()
+				case "close":
+					requireNoError(t, store.Close())
+				}
+				synctest.Wait()
+				select {
+				case _, ok := <-errs:
+					if ok {
+						t.Fatal("error channel is still open")
+					}
+				default:
+					t.Fatal("error channel is still open")
+				}
+				stop()
+				// synctest also requires every goroutine to exit when this
+				// function returns, including the background stop watcher.
+			})
+		})
+	}
 }
