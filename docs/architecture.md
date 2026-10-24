@@ -138,6 +138,19 @@ context or surface the error before exiting.
 
 `Invalidate(store, window)` connects a store subscription to `Window.Invalidate` and returns the function that stops it. It lives in the root package, so the module requires MyGo, but the Store never calls into MyGo itself: it works without a running MyGo app, in services and in tests.
 
+## DevTools integration
+
+The optional `devtools` subpackage depends on the core and observes exported
+snapshot, mutation and action APIs. The core does not import the inspector,
+HTTP transport or embedded assets. Explicit attachment IDs allow heterogeneous
+stores; generation IDs prevent restoring a previous instance after detach and
+reattach. Captured current state is guarded by source versions, while the bounded
+timeline preserves callback arrival order. All JSON exports own their buffers.
+The loopback browser UI and authenticated API share this model. State restoration
+strictly decodes and calls Set outside inspector locks, so normal subscriptions
+and persistence can run. Redaction occurs before retention and disables restoring
+masked state. See [DevTools](devtools.md) for setup and operational semantics.
+
 ## API mapping from Pinia and Zustand
 
 Nodra intentionally maps concepts, not framework syntax:

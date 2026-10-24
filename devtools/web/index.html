@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nodra DevTools</title>
+  <link rel="stylesheet" href="/style.css">
+  <script defer src="/app.js"></script>
+</head>
+<body>
+  <header>
+    <div class="brand"><span class="mark">N</span><div><strong>Nodra</strong><span class="sub">DEVELOPER TOOLS</span></div></div>
+    <span id="connection" role="status">Connecting…</span>
+    <div class="toolbar"><button id="refresh">Refresh</button><button id="export">Export snapshot</button><button id="clear">Clear timeline</button></div>
+  </header>
+  <div id="message" role="alert" hidden></div>
+  <main>
+    <aside aria-label="Attached stores"><h2>Stores <span id="store-count">0</span></h2><div id="stores"></div></aside>
+    <section class="timeline" aria-label="Event timeline">
+      <div class="section-head"><h2>Timeline <span id="event-count">0</span></h2><button id="live">Live state</button></div>
+      <label class="filter">Filter events<input id="filter" type="search" placeholder="Action, mutation, error…"></label>
+      <div id="events"></div>
+    </section>
+    <section class="detail" aria-label="State inspector">
+      <div class="section-head"><div><h2 id="detail-title">Select a store</h2><p id="detail-meta"></p></div><button id="restore" disabled>Restore snapshot</button></div>
+      <div class="tabs" role="tablist" aria-label="Inspector views">
+        <button id="tab-state" role="tab" aria-selected="true" aria-controls="panel-state">State</button>
+        <button id="tab-changes" role="tab" aria-selected="false" aria-controls="panel-changes">Changes</button>
+        <button id="tab-event" role="tab" aria-selected="false" aria-controls="panel-event">Event</button>
+      </div>
+      <div id="panel-state" role="tabpanel" aria-labelledby="tab-state"><pre id="state" tabindex="0">No stores attached.</pre></div>
+      <div id="panel-changes" role="tabpanel" aria-labelledby="tab-changes" hidden><pre id="changes" tabindex="0">Select a mutation to compare before and after.</pre></div>
+      <div id="panel-event" role="tabpanel" aria-labelledby="tab-event" hidden><pre id="event" tabindex="0">Select an event.</pre></div>
+      <details id="editor"><summary>Apply JSON state</summary><p>Replaces this store through Set. Store subscriptions run normally; external action effects are not reversed.</p><label for="json-input">Replacement state</label><textarea id="json-input" spellcheck="false" rows="8"></textarea><button id="apply" disabled>Apply to store</button><span id="mode"></span></details>
+    </section>
+  </main>
+  <footer>Local session · bounded in-memory history · state restoration does not replay actions</footer>
+  <noscript>This inspector requires JavaScript.</noscript>
+</body>
+</html>

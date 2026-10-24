@@ -8,7 +8,8 @@
 go get github.com/yldm-tech/nodra@latest
 ```
 
-Everything is in the root package, `github.com/yldm-tech/nodra`.
+The core API is in `github.com/yldm-tech/nodra`. The optional local inspector is
+in `github.com/yldm-tech/nodra/devtools`, so applications can omit its server and UI.
 
 ## MyGo usage
 
@@ -59,6 +60,8 @@ tasks.Update(func(value *[]Task) {
 - `AutoSaveAsync` for debounced, coalesced writes with `Flush`, `Close` and an error stream
 - Context-bound, bounded `Watch` streams that close with the store
 - `Invalidate` to redraw a MyGo window when a store publishes
+- Optional DevTools with a local browser inspector, mutation/action timeline,
+  state diffs, snapshot export, JSON editing and opt-in state restoration
 
 ## Design guarantees
 
@@ -147,11 +150,40 @@ go run ./examples/persistent -file /path/to/state.json
 
 ```text
 *.go                           store, history, persistence, MyGo invalidation, and tests (package nodra)
+devtools/                      optional inspector, local HTTP API and embedded browser UI
 examples/                      standalone and native MyGo examples
 docs/architecture.md           lifecycle and threading details
 ```
 
 The repository is one Go module, `github.com/yldm-tech/nodra`, with a single `go.mod` at the root.
+
+## DevTools
+
+```go
+import "github.com/yldm-tech/nodra/devtools"
+
+inspector := devtools.New(devtools.Options{}) // read-only by default
+defer inspector.Close()
+stop, err := devtools.Attach(inspector, "preferences", prefsStore)
+// Handle err before using stop; call stop when this store is no longer in scope.
+url, err := inspector.Listen() // random loopback port; open the full session URL
+```
+
+The browser shows multiple stores, live state, bounded mutation/action history,
+action durations and errors, before/after diffs, filtering and JSON export. Set
+`AllowRestore: true` explicitly to enable typed JSON editing and restoring a
+retained snapshot. Restoration calls Set and emits new events; it does not reverse
+external action effects. `Redact` filters state before capture and disables
+restoration. No external assets, services or frontend build step are required.
+
+Try the [interactive example](examples/devtools/main.go) and see the
+[DevTools guide](docs/devtools.md) for lifecycle, redaction and browser tests:
+
+```sh
+go run ./examples/devtools -restore
+```
+
+![Nodra DevTools inspecting a state change](docs/devtools.png)
 
 ## Verification
 
