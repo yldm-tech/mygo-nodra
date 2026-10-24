@@ -37,9 +37,32 @@ try {
   page.on('pageerror', error => errors.push(error.message));
   page.on('dialog', dialog => dialog.accept());
   await page.goto(await demo(true));
-  await page.getByText('Connected · local session', { exact: true }).waitFor();
+  await page.getByText('Connected', { exact: true }).waitFor();
   assert.equal(await page.locator('.store').count(), 1);
   assert.match(await page.locator('#state').innerText(), /"count": 1/);
+  // Exercise type filters together with the text search.
+  await page.locator('[data-kind=mutation]').click();
+  assert.equal(await page.locator('.event').count(), 1);
+  await page.locator('[data-kind=action]').click();
+  assert.equal(await page.locator('.event').count(), 2);
+  await page.locator('[data-kind=error]').click();
+  assert.equal(await page.locator('.event').count(), 1);
+  await page.locator('[data-kind=all]').click();
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.locator('#copy-state').click();
+  assert.deepEqual(JSON.parse(await page.evaluate(() => navigator.clipboard.readText())), { count: 1 });
+  await page.locator('#tab-state').focus();
+  await page.keyboard.press('ArrowRight');
+  assert.equal(await page.locator('#tab-changes').getAttribute('aria-selected'), 'true');
+  await page.keyboard.press('End');
+  assert.equal(await page.locator('#tab-event').getAttribute('aria-selected'), 'true');
+  await page.keyboard.press('Home');
+  assert.equal(await page.locator('#tab-state').getAttribute('aria-selected'), 'true');
+  await page.locator('#theme').click();
+  await page.reload();
+  await page.getByText('Connected', { exact: true }).waitFor();
+  assert.equal(await page.locator('html').getAttribute('data-theme'), 'dark');
+  await page.locator('#theme').click();
   await page.locator('.event').filter({ hasText: 'rejected example' }).click();
   await page.locator('#tab-event').click();
   assert.match(await page.locator('#event').innerText(), /example validation failed/);
@@ -72,21 +95,64 @@ try {
   assert.ok(exported.events.some(event => event.error === 'example validation failed'));
   await page.locator('.event').first().click();
   await page.locator('#tab-changes').click();
-  assert.match(await page.locator('#changes').innerText(), /\+ 9/);
+  assert.match(await page.locator('#changes').innerText(), /\+\s*9/);
   await page.locator('#editor summary').click();
-  if (process.env.DEVTOOLS_SCREENSHOT) await page.screenshot({ path: process.env.DEVTOOLS_SCREENSHOT });
+  if (process.env.DEVTOOLS_SCREENSHOT) {
+    await page.screenshot({ path: process.env.DEVTOOLS_SCREENSHOT });
+    await page.locator('#theme').click();
+    await page.screenshot({ path: process.env.DEVTOOLS_SCREENSHOT.replace(/\.png$/, '-dark.png') });
+    await page.locator('#theme').click();
+  }
+  // Panels must remain usable without page-level horizontal scrolling.
+  for (const width of [1024, 768, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `Overflow at ${width}px`);
+    await page.locator('#tab-state').click();
+    assert.equal(await page.locator('#state').isVisible(), true);
+    if (width === 390 && process.env.DEVTOOLS_SCREENSHOT) await page.screenshot({ path: process.env.DEVTOOLS_SCREENSHOT.replace(/\.png$/, '-mobile.png'), fullPage: true });
+  }
+  await page.setViewportSize({ width: 1440, height: 900 });
   await page.locator('#clear').click();
   await page.waitForFunction(() => document.querySelectorAll('.event').length === 0);
   assert.equal(await page.locator('.store').count(), 1);
   const readonly = await browser.newPage();
   readonly.on('pageerror', error => errors.push(error.message));
-  await readonly.goto(await demo(false));
-  await readonly.getByText('Connected · local session', { exact: true }).waitFor();
+  const readonlyURL = await demo(false);
+  await readonly.goto(readonlyURL);
+  await readonly.getByText('Connected', { exact: true }).waitFor();
   assert.equal(await readonly.locator('#apply').isDisabled(), true);
   await readonly.locator('.event[data-sequence="1"]').click();
   assert.equal(await readonly.locator('#restore').isDisabled(), true);
+  // Rendering edge cases: long IDs/values, literal markup and null snapshots.
+  const edge = await browser.newPage({ viewport: { width: 768, height: 900 } });
+  edge.on('pageerror', error => errors.push(error.message));
+  const storeID = 'store-with-a-very-long-name-'.repeat(8);
+  const fixture = {
+    stores: [{ id: storeID, version: 2, generation: 1, state: { text: '</script><img src=x onerror=alert(1)>', long: 'x'.repeat(500), ready: true } }],
+    events: [{ storeId: storeID, kind: 'mutation', mutation: 'direct', version: 1, generation: 1, sequence: 1, at: new Date().toISOString(), previous: { ready: false }, state: null }]
+  };
+  await edge.route('**/api/snapshot', route => route.fulfill({ json: fixture }));
+  await edge.goto(readonlyURL);
+  await edge.getByText('Connected', { exact: true }).waitFor();
+  assert.equal(await edge.locator('.json-string').first().textContent(), '"</script><img src=x onerror=alert(1)>"');
+  assert.equal(await edge.locator('#state img').count(), 0);
+  assert.equal(await edge.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, JSON.stringify(await edge.evaluate(() => [...document.querySelectorAll('body *')].filter(node => node.getBoundingClientRect().right > innerWidth + 1 && getComputedStyle(node).position !== 'absolute').map(node => ({ tag: node.tagName, id: node.id, class: node.className, width: node.getBoundingClientRect().width })).slice(0, 12))));
+  await edge.locator('.event').click();
+  assert.equal(await edge.locator('#state .code-text').textContent(), 'null');
+  await edge.locator('#tab-changes').click();
+  assert.match(await edge.locator('#changes').innerText(), /null/);
+  await edge.unroute('**/api/snapshot');
+  await edge.route('**/api/snapshot', route => route.fulfill({ json: { stores: [], events: [] } }));
+  await edge.locator('#refresh').click();
+  await edge.locator('#stores').getByText('No stores attached', { exact: true }).waitFor();
+  assert.equal(await edge.locator('#copy-state').isDisabled(), true);
+  await edge.unroute('**/api/snapshot');
+  await edge.route('**/api/snapshot', route => route.fulfill({ status: 503, body: 'Session unavailable' }));
+  await edge.locator('#refresh').click();
+  await edge.getByText('Disconnected', { exact: true }).waitFor();
+  assert.match(await edge.locator('#message').innerText(), /Session unavailable/);
   assert.deepEqual(errors, []);
-  console.log('DevTools browser smoke passed: inspection, action errors, filtering, restore, JSON validation, retained edits, export, diff, clear and read-only mode.');
+  console.log('DevTools browser smoke passed: inspection, errors, type/text filters, clipboard, keyboard tabs, saved theme, responsive layouts, restore, JSON validation, retained edits, export, diff, clear and read-only mode.');
 } finally {
   if (browser) await browser.close();
   for (const child of children) {

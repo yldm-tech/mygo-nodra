@@ -33,8 +33,13 @@ returns an idempotent detach function. IDs must be unique among current stores.
 - The timeline records initial state, mutations (direct/patch/reset/action) and
   completed actions, with names, durations and errors. Failed actions appear
   without inventing a successful state mutation.
-- State, Changes and Event panels show JSON, before/after differences and metadata.
-- Filter matches event type, mutation type, action name and error text.
+- State, Changes and Event panels show syntax-highlighted JSON with line numbers,
+  side-by-side Before/After differences and event metadata. Copy JSON copies the
+  displayed state without line numbers. Arrow keys, Home and End switch tabs.
+- Type filters narrow the timeline to mutations, actions or errors. Text search
+  further matches event type, mutation type, action name and error text.
+- Light and dark themes use the header toggle and remember the selection when
+  browser storage is available. Narrow windows stack the inspector below history.
 - Export snapshot downloads the current stores and retained event history as JSON.
 - Clear timeline removes history while keeping attached stores and current state.
 
@@ -103,8 +108,11 @@ second. Use `-interval=1h` for a stable manual editing session.
 Go tests cover capture, bounded history, independent exports, redaction, strict
 restoration, attachment generations, concurrent capture/close, authenticated API
 requests and listener shutdown. The optional Playwright smoke test drives the
-actual UI through inspection, error details, filtering, state restoration, JSON
-validation, retained edits, export, diffs, clear and read-only mode. CI runs it in
+actual UI through inspection, error details, type/text filtering, clipboard copy,
+keyboard tabs, theme persistence, responsive layouts, state restoration, JSON
+validation, retained edits, export, diffs, clear and read-only mode. Rendering
+checks cover long identifiers, literal HTML strings, null snapshots, empty stores
+and disconnected sessions. CI runs it in
 headless Chromium:
 
 ```sh
@@ -117,4 +125,6 @@ PLAYWRIGHT_PATH=/tmp/nodra-browser/node_modules/playwright node scripts/devtools
 `DEVTOOLS_CHROMIUM_PATH` can select an existing Chromium executable.
 `DEVTOOLS_SCREENSHOT` optionally saves the exercised UI as a PNG.
 
-![Nodra DevTools timeline and before/after difference](devtools.png)
+![Nodra DevTools light theme and before/after difference](devtools.png)
+
+![Nodra DevTools dark theme](devtools-dark.png)
