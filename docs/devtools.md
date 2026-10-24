@@ -69,8 +69,9 @@ requests, file operations or other external effects of an action, and it does
 not replay action functions. JSON cannot preserve unexported fields, pointer
 identity or values excluded by json tags. Attach restorable state only when JSON
 replacement is appropriate. An evicted event cannot be restored; an event from a
-detached store cannot restore a new store later attached under the same ID.
-An already-running Apply may finish while its store is being detached.
+detached store cannot restore a new store later attached under the same ID,
+including when replacement races snapshot restoration. An already-running Apply
+may finish against its original store while that store is being detached.
 
 ## Redacting state
 

@@ -38,28 +38,47 @@ func SubscribeSelectorWith[T any, V comparable](store *Store[T], selector func(T
 			return
 		}
 		current := selector(snapshot.Value)
-		mu.Lock()
-		// Another writer may have published while the selector was running.
-		if snapshot.Version <= version {
+		for {
+			mu.Lock()
+			if snapshot.Version <= version {
+				mu.Unlock()
+				return
+			}
+			old, comparedVersion := previous, version
 			mu.Unlock()
+			// Comparators may panic or read the source without holding our lock.
+			equal := old == current
+			if options.Equals != nil {
+				equal = options.Equals(old, current)
+			}
+			mu.Lock()
+			if snapshot.Version <= version {
+				mu.Unlock()
+				return
+			}
+			if version != comparedVersion {
+				mu.Unlock()
+				continue // Compare again against the newer baseline.
+			}
+			previous, version = current, snapshot.Version
+			mu.Unlock()
+			if !equal {
+				fn(current, old)
+			}
 			return
-		}
-		version = snapshot.Version
-		old := previous
-		equal := old == current
-		if options.Equals != nil {
-			equal = options.Equals(old, current)
-		}
-		previous = current
-		mu.Unlock()
-		if !equal {
-			fn(current, old)
 		}
 	}
 	stop := store.Subscribe(changed)
+	initialized := false
+	defer func() {
+		if !initialized {
+			stop()
+		}
+	}()
 	// Catch changes between reading the initial value and registering. The
 	// version check also avoids recomputing when a callback already caught up.
 	changed(store.Snapshot())
+	initialized = true
 	return stop
 }
 
@@ -95,30 +114,51 @@ func Derive[T any, V any](store *Store[T], selector func(T) V, equals func(V, V)
 			return
 		}
 		next := selector(snapshot.Value)
-		d.mu.Lock()
-		if d.closed || snapshot.Version <= d.version {
+		for {
+			d.mu.RLock()
+			if d.closed || snapshot.Version <= d.version {
+				d.mu.RUnlock()
+				return
+			}
+			old, comparedVersion := d.value, d.version
+			d.mu.RUnlock()
+			equal := d.equals != nil && d.equals(old, next)
+			d.mu.Lock()
+			if d.closed || snapshot.Version <= d.version {
+				d.mu.Unlock()
+				return
+			}
+			if d.version != comparedVersion {
+				d.mu.Unlock()
+				continue
+			}
+			// Advance even when equal, but only after comparison succeeds.
+			d.version = snapshot.Version
+			if equal {
+				d.mu.Unlock()
+				return
+			}
+			d.value = next
+			listeners := make([]func(V), 0, len(d.listeners))
+			for _, fn := range d.listeners {
+				listeners = append(listeners, fn)
+			}
 			d.mu.Unlock()
+			for _, fn := range listeners {
+				fn(next)
+			}
 			return
-		}
-		// Advance even when the projection is equal, so an older computation
-		// cannot overwrite this version with a different value later.
-		d.version = snapshot.Version
-		if d.equals != nil && d.equals(d.value, next) {
-			d.mu.Unlock()
-			return
-		}
-		d.value = next
-		listeners := make([]func(V), 0, len(d.listeners))
-		for _, fn := range d.listeners {
-			listeners = append(listeners, fn)
-		}
-		d.mu.Unlock()
-		for _, fn := range listeners {
-			fn(next)
 		}
 	}
 	d.stop = store.Subscribe(changed)
+	initialized := false
+	defer func() {
+		if !initialized {
+			d.stop()
+		}
+	}()
 	changed(store.Snapshot())
+	initialized = true
 	return d
 }
 func (d *Derived[T, V]) Get() V { d.mu.RLock(); defer d.mu.RUnlock(); return d.value }

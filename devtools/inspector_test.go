@@ -284,3 +284,40 @@ func TestConcurrentCaptureAndCloseReleaseSubscriptions(t *testing.T) {
 		t.Fatal("Close retained attached stores")
 	}
 }
+
+func TestConcurrentRestoreNeverTargetsReplacementStore(t *testing.T) {
+	for range 2000 {
+		inspector := New(Options{AllowRestore: true})
+		old := nodra.New(17)
+		detach := mustAttach(t, inspector, "counter", old)
+		sequence := inspector.Snapshot().Events[0].Sequence
+		replacement := nodra.New(99)
+		ready, stop, done := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+		go func() {
+			var first sync.Once
+			for {
+				select {
+				case <-stop:
+					done <- nil
+					return
+				default:
+				}
+				err := inspector.Restore("counter", sequence)
+				first.Do(func() { close(ready) })
+				if err != nil && !errors.Is(err, ErrNotFound) {
+					done <- err
+					return
+				}
+			}
+		}()
+		<-ready
+		detach()
+		mustAttach(t, inspector, "counter", replacement)
+		close(stop)
+		mustUpdate(t, <-done)
+		if got := replacement.Get(); got != 99 {
+			t.Fatalf("old snapshot restored into replacement: %d", got)
+		}
+		mustUpdate(t, inspector.Close())
+	}
+}

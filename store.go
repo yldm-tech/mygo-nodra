@@ -91,6 +91,12 @@ func (s *Store[T]) Reset() error {
 func (s *Store[T]) Patch(fn func(*T)) error { return s.Batch(func() { _ = s.Update(fn) }) }
 
 func (s *Store[T]) updateNamed(name string, kind MutationType, fn func(*T) error) error {
+	return s.updateCommitted(name, kind, fn, nil)
+}
+
+// updateCommitted keeps internal bookkeeping in the same commit as the source
+// version. committed runs under the store lock and must not invoke user code.
+func (s *Store[T]) updateCommitted(name string, kind MutationType, fn func(*T) error, committed func(uint64)) error {
 	if fn == nil {
 		return errors.New("nodra: nil update")
 	}
@@ -126,6 +132,9 @@ func (s *Store[T]) updateNamed(name string, kind MutationType, fn func(*T) error
 			return
 		}
 		s.version++
+		if committed != nil {
+			committed(s.version)
+		}
 		snapshot, listeners, mutations = s.publishLocked(before, kind, name)
 		published = true
 	}()
@@ -201,18 +210,40 @@ func (s *Store[T]) SubscribeWith(options SubscribeOptions[T], fn func(Snapshot[T
 	var subMu sync.Mutex
 	var previous T
 	hasPrevious := false
+	var version uint64
+	hasVersion := false
 	wrapped := func(snapshot Snapshot[T]) {
-		deliver := func() bool {
+		for {
 			subMu.Lock()
-			defer subMu.Unlock()
-			if hasPrevious && options.Equals != nil && options.Equals(previous, snapshot.Value) {
-				return false
+			if hasVersion && snapshot.Version <= version {
+				subMu.Unlock()
+				return
 			}
-			previous, hasPrevious = s.copy(snapshot.Value), true
-			return true
-		}()
-		if deliver {
-			fn(snapshot)
+			old, hadPrevious, comparedVersion := previous, hasPrevious, version
+			subMu.Unlock()
+			equal := hadPrevious && options.Equals != nil && options.Equals(old, snapshot.Value)
+			retry, deliver := func() (bool, bool) {
+				subMu.Lock()
+				defer subMu.Unlock()
+				if hasVersion && snapshot.Version <= version {
+					return false, false
+				}
+				if version != comparedVersion || hasPrevious != hadPrevious {
+					return true, false
+				}
+				if !equal {
+					previous, hasPrevious = s.copy(snapshot.Value), true
+				}
+				version, hasVersion = snapshot.Version, true
+				return false, !equal
+			}()
+			if retry {
+				continue
+			}
+			if deliver {
+				fn(snapshot)
+			}
+			return
 		}
 	}
 	s.mu.Lock()
@@ -225,11 +256,19 @@ func (s *Store[T]) SubscribeWith(options SubscribeOptions[T], fn func(Snapshot[T
 	s.listeners[id] = wrapped
 	initial := Snapshot[T]{s.value, s.version}
 	s.mu.Unlock()
-	if options.Immediate {
-		wrapped(Snapshot[T]{s.copy(initial.Value), initial.Version})
-	}
 	var once sync.Once
-	return func() { once.Do(func() { s.mu.Lock(); delete(s.listeners, id); s.mu.Unlock() }) }
+	stop := func() { once.Do(func() { s.mu.Lock(); delete(s.listeners, id); s.mu.Unlock() }) }
+	if options.Immediate {
+		initialized := false
+		defer func() {
+			if !initialized {
+				stop()
+			}
+		}()
+		wrapped(Snapshot[T]{s.copy(initial.Value), initial.Version})
+		initialized = true
+	}
+	return stop
 }
 func (s *Store[T]) SubscribeMutations(fn func(Mutation[T])) func() {
 	if fn == nil {
@@ -285,12 +324,15 @@ func (s *Store[T]) Watch(ctx context.Context, buffer int) <-chan Snapshot[T] {
 	ch := make(chan Snapshot[T], buffer)
 	var mu sync.Mutex
 	closed := false
+	var version uint64
+	hasVersion := false
 	unsubscribe := s.Subscribe(func(snapshot Snapshot[T]) {
 		mu.Lock()
 		defer mu.Unlock()
-		if closed {
+		if closed || (hasVersion && snapshot.Version <= version) {
 			return
 		}
+		version, hasVersion = snapshot.Version, true
 		select {
 		case ch <- snapshot:
 		default:

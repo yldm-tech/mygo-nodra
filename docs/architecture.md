@@ -55,8 +55,10 @@ once at the outermost boundary. Concurrent writers may join an open batch; use
 Listeners run synchronously on the writer goroutine after the store lock is
 released. This makes a listener safe to call `Get`, `Update`, `Close` or
 unsubscribe, while preserving an ordered callback sequence for one writer.
-Different concurrent writers may invoke listeners concurrently. Applications
-that need serialized side effects should use their own queue or mutex.
+Different concurrent writers may invoke listeners concurrently. Subscriptions
+discard obsolete snapshots before accepting them, but a callback already in
+progress can still finish after one for a newer version. Applications that need
+serialized side effects should use their own queue or mutex.
 
 `SubscribeWith` can deliver the initial snapshot and can compare values per
 subscriber. `SubscribeSelector` is a convenience for comparable projections.
@@ -66,7 +68,29 @@ to discard outdated computations, including when the latest selected value is
 equal to the cached value. Intermediate changes during initialization may be
 coalesced. This does not serialize user callbacks: callbacks from different
 writers can still overlap, and a callback that has already started may finish
-after one for a newer version.
+after one for a newer version. Equality functions run outside subscription and
+derived-cache locks, so a comparison panic propagates without poisoning the
+subscription. Comparisons may run concurrently and retry against a newer
+baseline; use pure, concurrency-safe comparators. A comparison failure leaves
+the previous projection and its version unchanged. The source write has already
+committed when a notification or comparison panics. If immediate delivery or
+initial catch-up panics during subscription, derived or history construction,
+its registered source listener is removed before the panic propagates.
+
+## History
+
+`Track` checks the source again after registering and ignores obsolete versions.
+Changes during initialization or delivered out of order may coalesce; history
+does not promise an entry for every concurrent mutation. Undo and redo catch up
+with committed source state before selecting a target. Stack changes and the
+new history version commit under the source write lock, after a successful commit
+clone and before notifications. Closed-store errors and clone panics therefore
+leave the undo/redo stacks intact. Concurrent travel and travel reentered from
+a listener follow those same commit boundaries.
+
+Undo/redo inside an open `Batch` returns `ErrHistoryBatch` without changing state
+or stacks. Complete the batch first: restoring state needs its own publication
+boundary. Closing history releases its subscription without closing the store.
 
 ## Persistence
 
@@ -144,8 +168,10 @@ The optional `devtools` subpackage depends on the core and observes exported
 snapshot, mutation and action APIs. The core does not import the inspector,
 HTTP transport or embedded assets. Explicit attachment IDs allow heterogeneous
 stores; generation IDs prevent restoring a previous instance after detach and
-reattach. Captured current state is guarded by source versions, while the bounded
-timeline preserves callback arrival order. All JSON exports own their buffers.
+reattach, including replacement racing an in-flight restore. A restore retains
+its original attachment identity through application; it cannot resolve a reused
+ID to a new target. Captured current state is guarded by source versions, while
+the bounded timeline preserves callback arrival order. All JSON exports own their buffers.
 The loopback browser UI and authenticated API share this model. State restoration
 strictly decodes and calls Set outside inspector locks, so normal subscriptions
 and persistence can run. Redaction occurs before retention and disables restoring
