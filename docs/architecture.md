@@ -60,22 +60,7 @@ discard obsolete snapshots before accepting them, but a callback already in
 progress can still finish after one for a newer version. Applications that need
 serialized side effects should use their own queue or mutex.
 
-`SubscribeWith` can deliver the initial snapshot and can compare values per
-subscriber. `SubscribeSelector` is a convenience for comparable projections.
-Selectors and derived getters recheck the source after subscribing to catch
-changes between the initial read and registration. They track source versions
-to discard outdated computations, including when the latest selected value is
-equal to the cached value. Intermediate changes during initialization may be
-coalesced. This does not serialize user callbacks: callbacks from different
-writers can still overlap, and a callback that has already started may finish
-after one for a newer version. Equality functions run outside subscription and
-derived-cache locks, so a comparison panic propagates without poisoning the
-subscription. Comparisons may run concurrently and retry against a newer
-baseline; use pure, concurrency-safe comparators. A comparison failure leaves
-the previous projection and its version unchanged. The source write has already
-committed when a notification or comparison panics. If immediate delivery or
-initial catch-up panics during subscription, derived or history construction,
-its registered source listener is removed before the panic propagates.
+`SubscribeWith` can deliver the initial snapshot and can compare values per subscriber. `SubscribeSelector` accepts any projection type. The default uses `==` only when both dynamic values are comparable (preserving pointer identity), otherwise `reflect.DeepEqual`; interfaces containing slices or maps are safe. `SelectorOptions.Equals` replaces the default comparison entirely. Default deep equality distinguishes nil and empty collections. Large collections should use a suitable custom comparator, such as `slices.Equal` or `maps.Equal`. Projection references remain subject to the source store ownership policy and must not be mutated outside an update. Selectors and derived getters recheck the source after subscribing to catch changes between the initial read and registration. They track source versions to discard outdated computations, including when the latest selected value is equal to the cached value. Intermediate changes during initialization may be coalesced. This does not serialize user callbacks: callbacks from different writers can still overlap, and a callback that has already started may finish after one for a newer version. Equality functions run outside subscription and derived-cache locks, so a comparison panic propagates without poisoning the subscription. Comparisons may run concurrently and retry against a newer baseline; use pure, concurrency-safe comparators. A comparison failure leaves the previous projection and its version unchanged. The source write has already committed when a notification or comparison panics. If immediate delivery or initial catch-up panics during subscription, derived or history construction, its registered source listener is removed before the panic propagates.
 
 ## History
 

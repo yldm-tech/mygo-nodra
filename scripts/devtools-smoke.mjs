@@ -151,8 +151,58 @@ try {
   await edge.locator('#refresh').click();
   await edge.getByText('Disconnected', { exact: true }).waitFor();
   assert.match(await edge.locator('#message').innerText(), /Session unavailable/);
+  // Large payloads stay bounded until the user requests more rows.
+  const large = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  large.on('pageerror', error => errors.push(error.message));
+  const largeState = { preferences: { theme: 'violet', language: 'English' }, entries: Array.from({ length: 2500 }, (_, n) => ({ name: n === 2499 ? 'needle-value' : `Word ${n}`, count: n })) };
+  const largeFixture = { stores: [{ id: 'dictionary', generation: 1, version: 7, state: largeState }], events: [], retention: { bytes: 2048, maxBytes: 16777216, maxEvents: 200, dropped: 8 } };
+  await large.route('**/api/snapshot', route => route.fulfill({ json: largeFixture }));
+  await large.goto(readonlyURL);
+  await large.getByText('Connected', { exact: true }).waitFor();
+  assert.equal(await large.locator('#state .code-line').count(), 1000);
+  await large.locator('#state-more').click();
+  assert.equal(await large.locator('#state .code-line').count(), 2000);
+  await large.locator('#view-tree').click();
+  assert.equal(await large.locator('#state-tree .tree-node').count(), 3);
+  await large.locator('#state-tree').getByText('"entries"', { exact: true }).click();
+  await large.waitForFunction(() => document.querySelectorAll('#state-tree .tree-node').length === 103);
+  await large.locator('#state-tree .tree-more').click();
+  assert.equal(await large.locator('#state-tree .tree-node').count(), 203);
+  await large.locator('#state-search').fill('needle-value');
+  assert.equal(await large.locator('.search-hit').count(), 1);
+  assert.match(await large.locator('.search-hit').innerText(), /2499/);
+  await large.locator('#state-search').fill('entries');
+  assert.equal(await large.locator('.search-hit').count(), 200);
+  assert.match(await large.locator('#state-search-status').innerText(), /limit reached/);
+  await large.locator('#state-search').fill('');
+  await large.locator('#collapse-state').click();
+  assert.equal(await large.locator('#state-tree details[open]').count(), 0);
+  await large.locator('#state-tree > details > summary').click();
+  await large.locator('#state-tree').getByText('"preferences"', { exact: true }).click();
+  await large.waitForFunction(() => document.querySelectorAll('#state-tree .tree-leaf').length === 2);
+  if (process.env.DEVTOOLS_SCREENSHOT) {
+    await large.screenshot({ path: process.env.DEVTOOLS_SCREENSHOT.replace(/\.png$/, '-tree.png') });
+    await large.locator('#theme').click();
+    await large.screenshot({ path: process.env.DEVTOOLS_SCREENSHOT.replace(/\.png$/, '-tree-dark.png') });
+  }
+  await large.locator('#state-search').fill('needle-value');
+  await large.locator('#refresh').click();
+  assert.equal(await large.locator('#state-search').inputValue(), 'needle-value');
+  // The diff must announce truncation instead of claiming a complete comparison.
+  largeFixture.events = [{ sequence: 1, generation: 1, storeId: 'dictionary', kind: 'mutation', at: new Date().toISOString(), previous: Array(600).fill(0), state: Array(600).fill(1) }];
+  await large.locator('#refresh').click();
+  await large.locator('.event').click();
+  await large.locator('#tab-changes').click();
+  assert.equal(await large.locator('.diff-block').count(), 500);
+  assert.match(await large.locator('#diff-summary').innerText(), /Comparison limited/);
+  largeFixture.events = [{ sequence: 2, generation: 1, storeId: 'dictionary', kind: 'mutation', at: new Date().toISOString(), previous: Array(20001).fill(0), state: [...Array(20000).fill(0), 1] }];
+  await large.locator('#refresh').click();
+  await large.locator('.event').click();
+  assert.match(await large.locator('#changes').innerText(), /More changes may exist/);
+  assert.doesNotMatch(await large.locator('#changes').innerText(), /identical/);
+
   assert.deepEqual(errors, []);
-  console.log('DevTools browser smoke passed: inspection, errors, type/text filters, clipboard, keyboard tabs, saved theme, responsive layouts, restore, JSON validation, retained edits, export, diff, clear and read-only mode.');
+  console.log('DevTools browser smoke passed: inspection, errors, type/text filters, clipboard, keyboard tabs, saved theme, responsive layouts, restore, JSON validation, retained edits, export, diff, clear, read-only mode, lazy trees, paginated JSON, state search and diff limits.');
 } finally {
   if (browser) await browser.close();
   for (const child of children) {

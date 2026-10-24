@@ -61,7 +61,7 @@ tasks.Update(func(value *[]Task) {
 - Context-bound, bounded `Watch` streams that close with the store
 - `Invalidate` to redraw a MyGo window when a store publishes
 - Optional DevTools with a local browser inspector, mutation/action timeline,
-  state diffs, snapshot export, JSON editing and opt-in state restoration
+  lazy state trees, key/value search, bounded state diffs, snapshot export, JSON editing and opt-in state restoration
 
 ## Design guarantees
 
@@ -93,6 +93,21 @@ Clone all mutable nested references too. The function must support concurrent
 calls and must not reenter the store. Each isolation boundary costs a copy; keep
 using `New` for immutable state or large data already managed with copy-on-write.
 Named factories support the same policy through `DefineWithClone`.
+
+## Collection selectors
+
+Selectors accept slices, maps and values containing interfaces. By default dynamically comparable values use `==` (including pointer identity); other values use `reflect.DeepEqual`. Nil and empty collections differ with the default comparison. Supply `Equals` for domain-specific equality or faster comparisons of large collections:
+
+```go
+stop := nodra.SubscribeSelectorWith(store,
+    func(s State) []string { return s.Tags },
+    func(current, previous []string) { window.Invalidate() },
+    nodra.SelectorOptions[[]string]{Equals: slices.Equal[[]string]},
+)
+defer stop()
+```
+
+For maps use `maps.Equal[map[string]int, map[string]int]` or a custom comparator. Comparators must be pure and concurrency-safe; a supplied comparator replaces the default entirely. Selected reference values follow the source store's ownership policy: treat them as read-only and copy before changing them. `SubscribeSelector` offers the same default equality without previous values or options.
 
 ## Versioned persistence
 
@@ -195,7 +210,19 @@ go vet ./...
 
 Run the native MyGo example with `go run ./examples/mygo`.
 
-CI also runs golangci-lint, cross builds for Linux and Windows, and checks that the module path is `github.com/yldm-tech/nodra`, that there is no other `go.mod`, `go.work` or `replace` directive, and that `go mod tidy` leaves no diff.
+CI runs race tests and vet on Linux, macOS and Windows. It also runs golangci-lint, two 10-second fuzz targets, benchmark smoke tests, cross builds for Linux and Windows, and checks that the module path is `github.com/yldm-tech/nodra`, that there is no other `go.mod`, `go.work` or `replace` directive, and that `go mod tidy` leaves no diff.
+
+### Fuzzing and benchmarks
+
+```sh
+go test -run '^$' -fuzz=FuzzVersionedJSONDecode -fuzztime=30s -parallel=2 .
+go test -run '^$' -fuzz=FuzzHistoryStateMachine -fuzztime=30s -parallel=2 .
+go test -run '^$' -bench=. -benchmem -count=5 .
+```
+
+Fuzzing checks accepted versioned/legacy JSON round trips and compares bounded undo/redo/batch operations with an independent state-machine model. Benchmarks report store updates with 0/1/100 listeners, full cloning of a 1,000-entry map, and selection of 1,000-element slices with default versus custom equality. Run repeated measurements on the same Go version, hardware and load before comparing changes. The CI `-benchtime=1x` run only checks execution, with no performance thresholds.
+
+An illustrative local run on Apple M4 Pro, darwin/arm64 measured approximately 73 ns per update without listeners, 101 ns with one listener and 1.51 µs with 100 listeners; cloning the map cost 6.81 µs. Slice selection including the projection clone took 6.57 µs with default equality and 1.13 µs with `slices.Equal`. These are machine-specific measurements, not API guarantees.
 
 ## Releases
 

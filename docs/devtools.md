@@ -34,8 +34,7 @@ returns an idempotent detach function. IDs must be unique among current stores.
   completed actions, with names, durations and errors. Failed actions appear
   without inventing a successful state mutation.
 - State, Changes and Event panels show syntax-highlighted JSON with line numbers,
-  side-by-side Before/After differences and event metadata. Copy JSON copies the
-  displayed state without line numbers. Arrow keys, Home and End switch tabs.
+  side-by-side Before/After differences and event metadata. Copy JSON copies the complete captured state without line numbers, including rows not currently rendered. Arrow keys, Home and End switch tabs.
 - Type filters narrow the timeline to mutations, actions or errors. Text search
   further matches event type, mutation type, action name and error text.
 - Light and dark themes use the header toggle and remember the selection when
@@ -43,12 +42,17 @@ returns an idempotent detach function. IDs must be unique among current stores.
 - Export snapshot downloads the current stores and retained event history as JSON.
 - Clear timeline removes history while keeping attached stores and current state.
 
-History is bounded (200 events by default). Event sequence numbers describe
-capture order; concurrent mutation callbacks can arrive out of source-version
-order. The current state only advances to the highest captured version. Action
-metadata includes the version observed at notification time; its state panel is
-explicitly live rather than a snapshot of the action. Updates during initial
-registration may coalesce into a catch-up snapshot.
+### Large state and retention
+
+Switch State between JSON and Tree. Tree expands branches on demand, renders 100 children at a time and remembers expansion while the same store/event is selected. Collapse all closes branches; nesting beyond 40 levels is available through JSON or search. Key/value search traverses captured state independently of expanded branches, with up to 200 results and 50,000 visited nodes. The UI reports when a search limit is reached.
+
+State and Event JSON initially render 1,000 lines; load another 1,000 with the button below. Lines longer than 2,000 characters are visibly shortened. Copy JSON and snapshot export retain the complete captured data. Changes compares at most 500 differences or 20,000 visited nodes and explicitly reports an incomplete comparison when capped.
+
+`Options.MaxStateBytes` defaults to 1 MiB per encoded state after redaction. Oversize state becomes a visible inspection error and cannot be restored; it does not prevent the source update, and a later smaller value can recover. Encoding and redaction still run before this check, so the cap does not bound temporary encoding allocations.
+
+History is bounded by both `Options.Limit` (200 events by default) and `Options.MaxHistoryBytes` (16 MiB). Oldest events are evicted to satisfy either limit. An event that alone exceeds the byte budget is discarded while the latest store state still advances. Exported `retention` and the timeline footer report accounted bytes, limits and dropped events. Byte accounting includes state/text payloads plus a fixed 256-byte metadata allowance per event; it is not an exact JSON export size or total process memory bound. Current states are retained separately, so attach a bounded number of stores. Clear resets the timeline accounting and dropped count.
+
+Event sequence numbers describe capture order; concurrent mutation callbacks can arrive out of source-version order. The current state only advances to the highest captured version. Action metadata includes the version observed at notification time; its state panel is explicitly live rather than a snapshot of the action. Updates during initial registration may coalesce into a catch-up snapshot.
 
 Snapshots are independent JSON buffers. Unsupported JSON types and redaction
 errors appear as inspection errors without preventing store updates. Capturing
@@ -106,15 +110,7 @@ go run ./examples/devtools -restore        # enable editing/restoration
 The counter records a successful and rejected action, then increments once per
 second. Use `-interval=1h` for a stable manual editing session.
 
-Go tests cover capture, bounded history, independent exports, redaction, strict
-restoration, attachment generations, concurrent capture/close, authenticated API
-requests and listener shutdown. The optional Playwright smoke test drives the
-actual UI through inspection, error details, type/text filtering, clipboard copy,
-keyboard tabs, theme persistence, responsive layouts, state restoration, JSON
-validation, retained edits, export, diffs, clear and read-only mode. Rendering
-checks cover long identifiers, literal HTML strings, null snapshots, empty stores
-and disconnected sessions. CI runs it in
-headless Chromium:
+Go tests cover capture, bounded history, independent exports, redaction, strict restoration, attachment generations, concurrent capture/close, authenticated API requests and listener shutdown. The optional Playwright smoke test drives the actual UI through inspection, error details, type/text filtering, clipboard copy, keyboard tabs, theme persistence, responsive layouts, state restoration, JSON validation, retained edits, export, diffs, clear and read-only mode. Rendering checks cover long identifiers, literal HTML strings, null snapshots, empty stores and disconnected sessions. Large-state fixtures exercise 2,500 records, lazy branch pagination, raw JSON pagination, search outside rendered rows, and explicit search/diff limits. CI runs it in headless Chromium:
 
 ```sh
 # Install test tooling outside the repository; library users do not need Node.
@@ -129,3 +125,8 @@ PLAYWRIGHT_PATH=/tmp/nodra-browser/node_modules/playwright node scripts/devtools
 ![Nodra DevTools light theme and before/after difference](devtools.png)
 
 ![Nodra DevTools dark theme](devtools-dark.png)
+
+
+![Lazy tree inspection of 2,500 records](devtools-tree.png)
+
+![Lazy tree inspection in the dark theme](devtools-tree-dark.png)
