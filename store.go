@@ -24,6 +24,7 @@ type SubscribeOptions[T any] struct {
 type Store[T any] struct {
 	mu                sync.RWMutex
 	value, initial    T
+	clone             func(T) T
 	version, nextID   uint64
 	listeners         map[uint64]listener[T]
 	mutationListeners map[uint64]func(Mutation[T])
@@ -40,20 +41,39 @@ type Store[T any] struct {
 }
 
 func New[T any](initial T) *Store[T] { return newStore("", initial) }
+
+// NewWithClone isolates owned state, snapshots, subscriber values and rollback
+// with clone. Clone must copy all mutable references, be safe for concurrent
+// calls, and must not reenter the store. A nil clone preserves New's behavior.
+func NewWithClone[T any](initial T, clone func(T) T) *Store[T] {
+	return newStoreWithClone("", initial, clone)
+}
+
 func newStore[T any](id string, initial T) *Store[T] {
-	return &Store[T]{id: id, value: initial, initial: initial, listeners: map[uint64]listener[T]{}, mutationListeners: map[uint64]func(Mutation[T]){}, actionListeners: map[uint64]func(ActionEvent){}, actionHooks: map[uint64]ActionHooks{}, done: make(chan struct{})}
+	return newStoreWithClone(id, initial, nil)
+}
+func newStoreWithClone[T any](id string, initial T, clone func(T) T) *Store[T] {
+	s := &Store[T]{id: id, clone: clone, listeners: map[uint64]listener[T]{}, mutationListeners: map[uint64]func(Mutation[T]){}, actionListeners: map[uint64]func(ActionEvent){}, actionHooks: map[uint64]ActionHooks{}, done: make(chan struct{})}
+	s.value, s.initial = s.copy(initial), s.copy(initial)
+	return s
+}
+func (s *Store[T]) copy(value T) T {
+	if s.clone != nil {
+		return s.clone(value)
+	}
+	return value
 }
 func (s *Store[T]) Snapshot() Snapshot[T] {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return Snapshot[T]{s.value, s.version}
+	return Snapshot[T]{s.copy(s.value), s.version}
 }
 func (s *Store[T]) Get() T          { return s.Snapshot().Value }
 func (s *Store[T]) State() T        { return s.Get() }
 func (s *Store[T]) Version() uint64 { s.mu.RLock(); defer s.mu.RUnlock(); return s.version }
 
 func (s *Store[T]) Set(value T) error {
-	return s.mutate(func() { s.value = value }, MutationDirect, "")
+	return s.updateNamed("", MutationDirect, func(v *T) error { *v = value; return nil })
 }
 func (s *Store[T]) Update(fn func(*T)) error {
 	return s.UpdateErr(func(v *T) error {
@@ -65,72 +85,55 @@ func (s *Store[T]) Update(fn func(*T)) error {
 }
 func (s *Store[T]) UpdateErr(fn func(*T) error) error   { return s.updateNamed("", MutationPatch, fn) }
 func (s *Store[T]) Transaction(fn func(*T) error) error { return s.UpdateErr(fn) }
-func (s *Store[T]) Reset() error                        { return s.mutate(func() { s.value = s.initial }, MutationReset, "") }
-func (s *Store[T]) Patch(fn func(*T)) error             { return s.Batch(func() { _ = s.Update(fn) }) }
+func (s *Store[T]) Reset() error {
+	return s.updateNamed("", MutationReset, func(v *T) error { *v = s.initial; return nil })
+}
+func (s *Store[T]) Patch(fn func(*T)) error { return s.Batch(func() { _ = s.Update(fn) }) }
 
 func (s *Store[T]) updateNamed(name string, kind MutationType, fn func(*T) error) error {
 	if fn == nil {
 		return errors.New("nodra: nil update")
 	}
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		return ErrClosed
-	}
-	before := s.value
+	var before T
+	var snapshot Snapshot[T]
+	var listeners []listener[T]
+	var mutations []func(Mutation[T])
+	published := false
 	var err error
-	var panicValue any
-	func() { defer func() { panicValue = recover() }(); err = fn(&s.value) }()
-	if panicValue != nil {
-		s.value = before
-		s.mu.Unlock()
-		panic(panicValue)
-	}
-	if err != nil {
-		s.value = before
-		s.mu.Unlock()
-		return err
-	}
-	if s.batch > 0 {
-		s.dirty = true
-		if s.batchType == "" {
-			s.batchType = kind
-			s.batchName = name
-		}
-		s.mu.Unlock()
-		return nil
-	}
-	s.version++
-	snapshot, listeners, mutations := s.publishLocked(before, kind, name)
-	s.mu.Unlock()
-	notify(listeners, snapshot)
-	notifyMutation(mutations, Mutation[T]{Type: kind, Name: name, Previous: before, Value: snapshot.Value, Version: snapshot.Version, At: time.Now()})
-	return nil
-}
-
-func (s *Store[T]) mutate(mutator func(), kind MutationType, name string) error {
 	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		return ErrClosed
-	}
-	before := s.value
-	mutator()
-	if s.batch > 0 {
-		s.dirty = true
-		if s.batchType == "" {
-			s.batchType = kind
-			s.batchName = name
+	func() {
+		// Release the lock on update or clone panics without publishing a
+		// partially committed value. The candidate is not the owned state.
+		defer s.mu.Unlock()
+		if s.closed {
+			err = ErrClosed
+			return
 		}
-		s.mu.Unlock()
-		return nil
+		before = s.value
+		next := s.copy(before)
+		if err = fn(&next); err != nil {
+			return
+		}
+		// Copy on commit too: a callback may retain its candidate or a caller
+		// may retain references passed to Set.
+		s.value = s.copy(next)
+		if s.batch > 0 {
+			s.dirty = true
+			if s.batchType == "" {
+				s.batchType = kind
+				s.batchName = name
+			}
+			return
+		}
+		s.version++
+		snapshot, listeners, mutations = s.publishLocked(before, kind, name)
+		published = true
+	}()
+	if published {
+		s.notify(listeners, snapshot)
+		s.notifyMutation(mutations, Mutation[T]{Type: kind, Name: name, Previous: before, Value: snapshot.Value, Version: snapshot.Version, At: time.Now()})
 	}
-	s.version++
-	snapshot, listeners, mutations := s.publishLocked(before, kind, name)
-	s.mu.Unlock()
-	notify(listeners, snapshot)
-	notifyMutation(mutations, Mutation[T]{Type: kind, Name: name, Previous: before, Value: snapshot.Value, Version: snapshot.Version, At: time.Now()})
-	return nil
+	return err
 }
 
 func (s *Store[T]) publishLocked(before T, kind MutationType, name string) (Snapshot[T], []listener[T], []func(Mutation[T])) {
@@ -167,8 +170,8 @@ func (s *Store[T]) Batch(fn func()) error {
 		s.version++
 		snapshot, listeners, mutations := s.publishLocked(before, kind, name)
 		s.mu.Unlock()
-		notify(listeners, snapshot)
-		notifyMutation(mutations, Mutation[T]{Type: kind, Name: name, Previous: before, Value: snapshot.Value, Version: snapshot.Version, At: time.Now()})
+		s.notify(listeners, snapshot)
+		s.notifyMutation(mutations, Mutation[T]{Type: kind, Name: name, Previous: before, Value: snapshot.Value, Version: snapshot.Version, At: time.Now()})
 	}()
 	fn()
 	return nil
@@ -186,7 +189,6 @@ func (s *Store[T]) Close() error {
 	s.mutationListeners = nil
 	s.actionListeners = nil
 	s.actionHooks = nil
-	s.actionHooks = nil
 	return nil
 }
 func (s *Store[T]) Subscribe(fn func(Snapshot[T])) func() {
@@ -200,14 +202,18 @@ func (s *Store[T]) SubscribeWith(options SubscribeOptions[T], fn func(Snapshot[T
 	var previous T
 	hasPrevious := false
 	wrapped := func(snapshot Snapshot[T]) {
-		subMu.Lock()
-		if hasPrevious && options.Equals != nil && options.Equals(previous, snapshot.Value) {
-			subMu.Unlock()
-			return
+		deliver := func() bool {
+			subMu.Lock()
+			defer subMu.Unlock()
+			if hasPrevious && options.Equals != nil && options.Equals(previous, snapshot.Value) {
+				return false
+			}
+			previous, hasPrevious = s.copy(snapshot.Value), true
+			return true
+		}()
+		if deliver {
+			fn(snapshot)
 		}
-		previous, hasPrevious = snapshot.Value, true
-		subMu.Unlock()
-		fn(snapshot)
 	}
 	s.mu.Lock()
 	if s.closed {
@@ -220,7 +226,7 @@ func (s *Store[T]) SubscribeWith(options SubscribeOptions[T], fn func(Snapshot[T
 	initial := Snapshot[T]{s.value, s.version}
 	s.mu.Unlock()
 	if options.Immediate {
-		wrapped(initial)
+		wrapped(Snapshot[T]{s.copy(initial.Value), initial.Version})
 	}
 	var once sync.Once
 	return func() { once.Do(func() { s.mu.Lock(); delete(s.listeners, id); s.mu.Unlock() }) }
@@ -255,14 +261,16 @@ func (s *Store[T]) mutationListenersCopyLocked() []func(Mutation[T]) {
 	}
 	return out
 }
-func notify[T any](listeners []listener[T], snapshot Snapshot[T]) {
+func (s *Store[T]) notify(listeners []listener[T], snapshot Snapshot[T]) {
 	for _, fn := range listeners {
-		fn(snapshot)
+		fn(Snapshot[T]{s.copy(snapshot.Value), snapshot.Version})
 	}
 }
-func notifyMutation[T any](listeners []func(Mutation[T]), mutation Mutation[T]) {
+func (s *Store[T]) notifyMutation(listeners []func(Mutation[T]), mutation Mutation[T]) {
 	for _, fn := range listeners {
-		fn(mutation)
+		event := mutation
+		event.Previous, event.Value = s.copy(mutation.Previous), s.copy(mutation.Value)
+		fn(event)
 	}
 }
 
