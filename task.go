@@ -347,9 +347,9 @@ func taskPhase(err error) TaskPhase {
 }
 
 func (a *AsyncAction[T, I, R]) status(task *Task, update func(*AsyncState)) error {
-	metrics := a.metrics(task)
 	stateErr := taskBoundary(func() error {
-		return task.state.Update(func(s *AsyncState) { update(s); s.Metrics = metrics; s.Revision++ })
+		// Sample under the status lock so concurrent progress cannot publish an older elapsed duration with a newer revision. No action lock holder waits on this task's status lock.
+		return task.state.Update(func(s *AsyncState) { update(s); s.Metrics = a.metrics(task); s.Revision++ })
 	})
 	state := task.state.Get()
 	globalErr := taskBoundary(func() error {

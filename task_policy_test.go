@@ -177,15 +177,17 @@ func TestConcurrentProgressDoesNotRegressStatus(t *testing.T) {
 	var mu sync.Mutex
 	var latestRevision uint64
 	var progress float64
+	var metrics TaskMetrics
 	var regressed bool
 	stop := action.Status().Subscribe(func(snapshot Snapshot[AsyncState]) {
 		mu.Lock()
 		defer mu.Unlock()
 		if snapshot.Value.Revision > latestRevision {
-			if snapshot.Value.Progress < progress {
+			if snapshot.Value.Progress < progress || snapshot.Value.Metrics.Work < metrics.Work || snapshot.Value.Metrics.Queue < metrics.Queue || snapshot.Value.Metrics.Commit < metrics.Commit {
 				regressed = true
 			}
 			progress = snapshot.Value.Progress
+			metrics = snapshot.Value.Metrics
 			latestRevision = snapshot.Value.Revision
 		}
 	})
@@ -194,7 +196,7 @@ func TestConcurrentProgressDoesNotRegressStatus(t *testing.T) {
 	requireNoError(t, err)
 	requireNoError(t, waitTask(t, task))
 	if regressed || action.Status().Get().Progress != 1 {
-		t.Fatal("concurrent progress regressed")
+		t.Fatal("concurrent progress or timing metrics regressed")
 	}
 }
 
