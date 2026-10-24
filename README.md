@@ -154,7 +154,9 @@ Set `ActionOptions.Debounce` to delay `LatestWins` work until a quiet interval a
 
 `Task.Status()` exposes that task's key, queued/running/terminal phase, progress and diagnostic error. The status Store closes after terminal status. The action-level Status describes the most recently accepted run, which is not a count of all active work. Use `ActiveTasks()` or `TaskSnapshot()` on the source for current work. Do not wait for another queued task synchronously from work, hooks or subscribers of the same bounded action; that can exhaust its own work slots. Progress may be reported concurrently during work; stop reporting when work returns.
 
-`SubscribeActionTrace` observes async acceptance, start, progress and terminal outcome. Action ID links traces to mutation and completion events; RunID is local to one action. TaskVersion orders one task's status while Revision orders source trace publication; callbacks can still overlap. Committed/Version identify the accepted publication even if notifications later fail. A Store Batch coalesces publication across writers, so its final mutation has no single ActionID and individual batched actions do not claim a published commit version. Durations include queue waiting time. Terminal task entries are released from the source's active map.
+`SubscribeActionTrace` observes async acceptance, start, progress and terminal outcome. Action ID links traces to mutation and completion events; RunID is local to one action. TaskVersion orders one task's status while Revision orders source trace publication; callbacks can still overlap. Committed/Version identify the accepted publication even if notifications later fail. A Store Batch coalesces publication across writers, so its final mutation has no single ActionID and individual batched actions do not claim a published commit version. Duration includes queue waiting time. Terminal task entries are released from the source's active map.
+
+`Metrics` on task status, traces and completion events separates `Debounce`, eligible `Queue` wait, `Work` and `Commit`. Commit measures the entire Store update attempt, including lock wait, clone/apply and synchronous mutation notifications; failed attempts still have a duration. Work excludes Before hooks. Other hooks and status callbacks are outside these phases, so they need not sum to Duration. `QueueDepth` counts live waiting tasks including debounce, and `ActiveWorkers` includes canceled work until it returns. Counts are sampled for that AsyncAction at publication time and are not a global live gauge. Tasks UI and JSON exports carry the same metrics.
 
 ## Owned projections for large state
 
@@ -341,12 +343,10 @@ err = writer.Flush(flushCtx)
 err = writer.Close(shutdownCtx)
 ```
 
-The writer schedules the current state once at startup. `Flush` waits for the
-version visible at the call; canceling one flush wait leaves the worker running.
-Failed writes stay pending and retry on the next update or flush. `Errors()` is
-a bounded stream for background failures; `Flush` and `Close` return errors
-directly. `Close` stops observing, attempts the final flush, and stops even on
-failure. Retry a failed shutdown write with `persistence.Save` and a fresh context.
+The writer schedules the current state once at startup. `Flush` waits for the version visible at the call; canceling one flush wait leaves the worker running. Failed writes stay pending and retry on the next update or flush. `Errors()` is a bounded stream for background failures; `Flush` and `Close` return errors directly. `Close` stops observing, attempts the final flush, and stops even on failure. Retry a failed shutdown write with `persistence.Save` and a fresh context.
+
+`writer.Status()` returns an observable `ReadOnly[PersistenceState]` for UI labels and MyGo invalidation. `RequestedVersion` is the newest requested source version and `SavedVersion` is this writer's durable acknowledgement; `HasSaved` distinguishes unsaved version zero. `Pending`, `Saving`, `Error` and `Closed` distinguish waiting, active I/O, failure and shutdown. Pending stays true if shutdown leaves changes unsaved, and retry clears the displayed failure while saving. Revision prevents delayed publishers from replacing newer status. Subscribers run synchronously outside writer locks; do not call Flush or Close from the writer's own status callbacks. Subscriber panics cannot terminate the worker. Writes made separately through `Persistence.Save` or another instance are outside this writer's acknowledgement.
+
 Parent cancellation and store closure stop the worker without a guaranteed drain.
 
 [`examples/persistent`](examples/persistent/main.go) combines cloning, legacy
@@ -379,12 +379,7 @@ stop, err := devtools.Attach(inspector, "preferences", prefsStore)
 url, err := inspector.Listen() // random loopback port; open the full session URL
 ```
 
-The browser shows multiple stores, live state, bounded mutation/action history,
-action durations and errors, before/after diffs, filtering and JSON export. Set
-`AllowRestore: true` explicitly to enable typed JSON editing and restoring a
-retained snapshot. Restoration calls Set and emits new events; it does not reverse
-external action effects. `Redact` filters state before capture and disables
-restoration. No external assets, services or frontend build step are required.
+The browser shows multiple stores, live state, bounded mutation/action history, action durations and errors, before/after diffs, filtering and JSON export. Set `AllowRestore: true` explicitly to enable typed JSON editing and restoring a retained snapshot. Restoration calls Set and emits new events; it does not reverse external action effects. `Redact` filters state before capture and disables restoration. `RedactMetadata` separately filters names, task keys and error text before timeline/task retention, pending progress and export. Metadata callback failures discard the original text and use a fixed diagnostic. Store IDs must be public labels. No external assets, services or frontend build step are required.
 
 Try the [interactive example](examples/devtools/main.go) and see the
 [DevTools guide](docs/devtools.md) for lifecycle, redaction and browser tests:
@@ -403,6 +398,8 @@ go vet ./...
 ```
 
 Run the native MyGo example with `go run ./examples/mygo`.
+
+CI compares public APIs with the PR base using a pinned `golang.org/x/exp/cmd/apidiff` and runs `scripts/check-consumer.sh` in a temporary independent module with `GOWORK=off`. Post-release verification runs the same consumer against the version downloaded through the Go proxy, without a local replace. To reproduce API comparison, set `APIDIFF` to the installed tool and run `bash scripts/check-api.sh /path/to/base-checkout`. Intentional incompatible changes require an exact incompatible report in `.github/api-changes/<base-commit-sha>.txt` plus migration guidance in the PR; unrelated or stale approvals cannot hide additional changes. This checks source compatibility, not runtime semantics or behavior of every downstream application.
 
 CI runs race tests and vet on Linux, macOS and Windows. It also runs golangci-lint, two 10-second fuzz targets, benchmark smoke tests, cross builds for Linux and Windows, and checks that the module path is `github.com/yldm-tech/nodra`, that there is no other `go.mod`, `go.work` or `replace` directive, and that `go mod tidy` leaves no diff.
 

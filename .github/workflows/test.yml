@@ -9,6 +9,32 @@ permissions:
 env:
   GOWORK: "off"
 jobs:
+  api:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: candidate
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.base.sha || (github.ref == 'refs/heads/main' && github.event.before != '0000000000000000000000000000000000000000' && github.event.before) || 'main' }}
+          path: baseline
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: candidate/go.mod
+          cache-dependency-path: candidate/go.sum
+      - name: Install API comparison tool
+        run: GOBIN="$RUNNER_TEMP/api-tools" go install golang.org/x/exp/cmd/apidiff@v0.0.0-20261014143641-f0251eb4aa3e
+      - name: Compare public APIs
+        working-directory: candidate
+        env:
+          APIDIFF: ${{ runner.temp }}/api-tools/apidiff
+        run: bash scripts/check-api.sh "$GITHUB_WORKSPACE/baseline"
+      - name: Independent consumer
+        working-directory: candidate
+        run: bash scripts/check-consumer.sh
+
   devtools-browser:
     runs-on: ubuntu-latest
     timeout-minutes: 10
