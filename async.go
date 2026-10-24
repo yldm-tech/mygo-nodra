@@ -38,6 +38,9 @@ type AsyncPersistence[T any] struct {
 	closing     bool
 	closeDone   chan struct{}
 	closeErr    error
+	state       *Store[PersistenceState]
+	revision    uint64
+	saving      bool
 }
 
 // AutoSaveAsync subscribes and schedules the current state once, then all
@@ -64,6 +67,7 @@ func (p *Persistence[T]) AutoSaveAsync(ctx context.Context, options AsyncOptions
 		p: p, ctx: workerCtx, cancel: cancel, options: options,
 		wake: make(chan struct{}, 1), done: make(chan struct{}),
 		errors: make(chan error, 8), changed: make(chan struct{}), closeDone: make(chan struct{}),
+		state: New(PersistenceState{Pending: true}),
 	}
 	a.unsubscribe = p.store.Subscribe(func(snapshot Snapshot[T]) { a.request(snapshot.Version) })
 	a.request(p.store.Version())
@@ -93,14 +97,17 @@ func (a *AsyncPersistence[T]) changedLocked() {
 
 func (a *AsyncPersistence[T]) request(version uint64) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	if a.stopped || a.closing {
+		a.mu.Unlock()
 		return
 	}
 	a.requested = max(a.requested, version)
 	if a.pendingLocked() {
 		a.signalLocked()
 	}
+	a.revision++
+	a.mu.Unlock()
+	a.publishStatus()
 }
 
 // Flush waits until the version visible when called has been saved, bypassing
@@ -136,6 +143,10 @@ func (a *AsyncPersistence[T]) flush(ctx context.Context, allowClosing bool) erro
 	a.requested = max(a.requested, target)
 	a.force = true
 	a.signalLocked()
+	a.revision++
+	a.mu.Unlock()
+	a.publishStatus()
+	a.mu.Lock()
 	for {
 		// An overlapping Close may have stopped the worker after satisfying
 		// this barrier. Report the durable write, not a spurious cancellation.
@@ -212,8 +223,12 @@ func (a *AsyncPersistence[T]) run() {
 		a.cancel()
 		a.mu.Lock()
 		a.stopped, a.terminalErr = true, terminal
+		a.saving = false
+		a.revision++
 		a.changedLocked()
 		a.mu.Unlock()
+		a.publishStatus()
+		_ = taskBoundary(func() error { return a.state.Close() })
 		close(a.errors)
 		close(a.done)
 	}()
@@ -236,12 +251,19 @@ func (a *AsyncPersistence[T]) run() {
 			a.mu.Lock()
 			pending := a.pendingLocked()
 			a.force = false
+			if pending {
+				a.saving = true
+				a.revision++
+			}
 			a.mu.Unlock()
 			if !pending {
 				break
 			}
+			a.publishStatus()
 			version, err := a.p.save(a.ctx)
 			a.mu.Lock()
+			a.saving = false
+			a.revision++
 			a.completed++
 			a.lastErr = err
 			if err == nil {
@@ -249,6 +271,7 @@ func (a *AsyncPersistence[T]) run() {
 			}
 			a.changedLocked()
 			a.mu.Unlock()
+			a.publishStatus()
 			if err != nil {
 				select {
 				case a.errors <- err:
