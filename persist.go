@@ -50,18 +50,32 @@ func (p *Persistence[T]) Load(ctx context.Context) error {
 	return p.store.Set(value)
 }
 func (p *Persistence[T]) Save(ctx context.Context) error {
+	_, err := p.save(ctx)
+	return err
+}
+
+// save returns the version actually written, rather than a version sampled
+// before waiting on another save. Async flush barriers use that acknowledgement.
+func (p *Persistence[T]) save(ctx context.Context) (uint64, error) {
 	if p == nil || p.store == nil || p.storage == nil || p.codec == nil {
-		return ErrInvalidPersistence
+		return 0, ErrInvalidPersistence
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	// Capture state only after taking the lock: a delayed older save must not
 	// overwrite a newer one, even when encoding itself is slow.
 	p.saveMu.Lock()
 	defer p.saveMu.Unlock()
-	data, err := p.codec.Encode(p.store.Get())
-	if err != nil {
-		return err
+	if err := ctx.Err(); err != nil {
+		return 0, err
 	}
-	return p.storage.Save(ctx, data)
+	snapshot := p.store.Snapshot()
+	data, err := p.codec.Encode(snapshot.Value)
+	if err != nil {
+		return snapshot.Version, err
+	}
+	return snapshot.Version, p.storage.Save(ctx, data)
 }
 
 // AutoSave subscribes to updates and saves synchronously after each update.
