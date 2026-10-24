@@ -19,7 +19,8 @@ type SelectorOptions[V any] struct {
 // SubscribeSelectorWith calls fn with current and previous selected values.
 // It catches up after registration and ignores obsolete computations. Callbacks
 // run on writer goroutines and may overlap, as with Store.Subscribe.
-func SubscribeSelectorWith[T any, V any](store *Store[T], selector func(T) V, fn func(current, previous V), options SelectorOptions[V]) func() {
+func SubscribeSelectorWith[T any, V any](source Reader[T], selector func(T) V, fn func(current, previous V), options SelectorOptions[V]) func() {
+	store := sourceStore(source)
 	if store == nil || selector == nil || fn == nil {
 		return func() {}
 	}
@@ -112,13 +113,30 @@ type Derived[T any, V any] struct {
 	closed    bool
 }
 
-func Derive[T any, V any](store *Store[T], selector func(T) V, equals func(V, V) bool) *Derived[T, V] {
+func Derive[T any, V any](source Reader[T], selector func(T) V, equals func(V, V) bool) *Derived[T, V] {
+	store := sourceStore(source)
+	if store == nil {
+		return &Derived[T, V]{closed: true}
+	}
+	return derive(store, store.Snapshot, store.Subscribe, selector, equals)
+}
+
+// DeriveProjection memoizes an owned projection without whole-source clones. It follows SubscribeProjection's ownership contract; returned reference values and listener arguments are read-only.
+func DeriveProjection[T any, V any](source Reader[T], project func(T) V, equals func(V, V) bool) *Derived[T, V] {
+	store := sourceStore(source)
+	if store == nil {
+		return &Derived[T, V]{closed: true}
+	}
+	return derive(store, store.borrowedSnapshot, store.subscribeBorrowed, project, equals)
+}
+
+func derive[T any, V any](store *Store[T], snapshot func() Snapshot[T], subscribe func(func(Snapshot[T])) func(), selector func(T) V, equals func(V, V) bool) *Derived[T, V] {
 	d := &Derived[T, V]{source: store, selector: selector, equals: equals, listeners: make(map[uint64]func(V))}
-	if store == nil || selector == nil {
+	if selector == nil {
 		d.closed = true
 		return d
 	}
-	initial := store.Snapshot()
+	initial := snapshot()
 	d.value = selector(initial.Value)
 	d.version = initial.Version
 	changed := func(snapshot Snapshot[T]) {
@@ -165,14 +183,14 @@ func Derive[T any, V any](store *Store[T], selector func(T) V, equals func(V, V)
 			return
 		}
 	}
-	d.stop = store.Subscribe(changed)
+	d.stop = subscribe(changed)
 	initialized := false
 	defer func() {
 		if !initialized {
 			d.stop()
 		}
 	}()
-	changed(store.Snapshot())
+	changed(snapshot())
 	initialized = true
 	return d
 }

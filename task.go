@@ -81,7 +81,7 @@ func NewAsyncAction[T, I, R any](store *Store[T], name string, work func(context
 }
 
 // Status returns the observable status of the latest run, suitable for MyGo invalidation or DevTools attachment. Callers must not write to this store.
-func (a *AsyncAction[T, I, R]) Status() *Store[AsyncState] { return a.state }
+func (a *AsyncAction[T, I, R]) Status() ReadOnly[AsyncState] { return a.state.ReadOnly() }
 
 // Run cancels the preceding run and starts a new one. A stale or canceled result never enters the Store. Canceling a Task does not stop a different run.
 func (a *AsyncAction[T, I, R]) Run(ctx context.Context, input I) (*Task, error) {

@@ -321,7 +321,7 @@ func (s *Store[T]) notifyMutation(listeners []func(Mutation[T]), mutation Mutati
 	}
 }
 
-func SubscribeSelector[T any, S any](store *Store[T], selector func(T) S, fn func(S)) func() {
+func SubscribeSelector[T any, S any](store Reader[T], selector func(T) S, fn func(S)) func() {
 	if fn == nil {
 		return func() {}
 	}

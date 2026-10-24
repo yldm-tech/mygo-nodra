@@ -138,25 +138,28 @@ func New(options Options) *Inspector {
 // Attach observes one typed store. IDs are explicit and unique, so unnamed and
 // heterogeneous stores can share an inspector. Unsupported JSON values appear
 // as inspection errors. The returned function detaches this store idempotently.
-func Attach[T any](i *Inspector, id string, source *nodra.Store[T]) (func(), error) {
-	if i == nil || source == nil || strings.TrimSpace(id) == "" {
+func Attach[T any](i *Inspector, id string, source nodra.Reader[T]) (func(), error) {
+	if i == nil || source == nil || source.Done() == nil || strings.TrimSpace(id) == "" {
 		return nil, ErrInvalid
 	}
 	initial := source.Snapshot()
 	state, stateErr := i.encode(id, initial.Value)
 	node := &attached{view: Store{ID: id, Version: initial.Version, State: state, Error: stateErr,
-		Restorable: i.options.AllowRestore && i.options.Redact == nil && stateErr == ""}}
+		Restorable: false}}
 	node.capture = func() {
 		latest := source.Snapshot()
 		raw, message := i.encode(id, latest.Value)
 		i.record(node, Event{StoreID: id, Kind: "snapshot", Version: latest.Version, At: time.Now().UTC(), State: raw, Error: message}, message, true)
 	}
-	node.restore = func(raw json.RawMessage) error {
-		var value T
-		if err := decode(raw, &value); err != nil {
-			return fmt.Errorf("%w: %v", ErrInvalid, err)
+	if writable, ok := source.(*nodra.Store[T]); ok {
+		node.restore = func(raw json.RawMessage) error {
+			var value T
+			if err := decode(raw, &value); err != nil {
+				return fmt.Errorf("%w: %v", ErrInvalid, err)
+			}
+			return writable.Set(value)
 		}
-		return source.Set(value)
+		node.view.Restorable = node.restore != nil && i.options.AllowRestore && i.options.Redact == nil && stateErr == ""
 	}
 	i.mu.Lock()
 	if i.closed {
@@ -285,7 +288,7 @@ func (i *Inspector) record(node *attached, event Event, stateErr string, update 
 	}
 	if update && event.Version >= node.view.Version {
 		node.view.Version, node.view.State, node.view.Error = event.Version, event.State, stateErr
-		node.view.Restorable = i.options.AllowRestore && i.options.Redact == nil && stateErr == ""
+		node.view.Restorable = node.restore != nil && i.options.AllowRestore && i.options.Redact == nil && stateErr == ""
 	}
 	event.Generation = node.view.Generation
 	i.appendLocked(event)
