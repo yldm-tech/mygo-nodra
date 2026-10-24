@@ -145,7 +145,13 @@ context or surface the error before exiting.
 
 ## MyGo integration
 
-`Invalidate(store, window)` connects a store subscription to `Window.Invalidate` and returns the function that stops it. It lives in the root package, so the module requires MyGo, but the Store never calls into MyGo itself: it works without a running MyGo app, in services and in tests.
+`Invalidate(store, window)` connects a store subscription to `Window.Invalidate`. `InvalidateSelector` and `InvalidateSelectorWith` instead subscribe to a projection with the existing selector equality, initialization catch-up and version ordering. The selector must include every business-state value displayed by that window. This filters requests for native frames; MyGo still owns rendering, and there is no automatic tracking of field reads.
+
+All three helpers register a window-close listener and return an idempotent stop function that removes both registrations. A destroyed window subscribes to nothing. A second destruction check catches a close between the initial check and listener registration; late subscription handles are released immediately if closing races with initialization. Initialization panics release the close listener and propagate unchanged. Stop prevents callbacks not yet past the active check from requesting a frame, but does not drain callbacks already running. Hiding a window preserves its subscriptions. Closing or detaching one window does not close the Store or affect other windows.
+
+Widget inputs bind pointers to local snapshot fields; commit only edited fields with `Store.Update` so unrelated concurrent changes survive. Keep transient drafts and widget state in the UI owner. Store subscriptions and selectors run on writer goroutines, while MyGo's `Window.Invalidate` safely posts the frame request to its main thread. Other UI-owned changes still require `Window.Update`.
+
+The helpers live in the root package, so the module requires MyGo, but the Store never calls into MyGo itself: it works without a running MyGo app, in services and in tests.
 
 ## DevTools integration
 
