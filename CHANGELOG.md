@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/yldm-tech/nodra/compare/v0.4.0...v0.5.0) (2026-10-24)
+
+
+### Features
+
+* add selector-based MyGo invalidation with automatic cleanup ([#19](https://github.com/yldm-tech/nodra/issues/19)) ([dc7cb70](https://github.com/yldm-tech/nodra/commit/dc7cb70ffbf8806014137eb931fddab3719c49f1))
+
 ## [0.4.0](https://github.com/yldm-tech/nodra/compare/v0.3.0...v0.4.0) (2026-10-24)
 
 
