@@ -13,6 +13,8 @@ in `github.com/yldm-tech/nodra/devtools`, so applications can omit its server an
 
 ## MyGo usage
 
+The MyGo integration targets v0.6.3, pinned in `go.mod` and shared by the native example.
+
 Redraw a native MyGo window whenever its store publishes:
 
 ```go
