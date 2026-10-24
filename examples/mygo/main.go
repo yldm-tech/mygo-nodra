@@ -74,12 +74,16 @@ func (app *counter) openPreferences() {
 }
 
 func (app *counter) preferencesView(c *ui.Context) {
-	// Bind the widget to a local value, then commit only its field. Replacing the whole snapshot could overwrite a concurrent count update.
-	doubleStep := app.store.Get().DoubleStep
+	// Commit only the edited field against the latest state; keep concurrent count changes.
+	doubleStep, err := nodra.BindField(app.store, func(s appState) bool { return s.DoubleStep }, func(s *appState, value bool) error { s.DoubleStep = value; return nil })
+	if err != nil {
+		log.Print(err)
+		return
+	}
 	ui.Column(c).Fill().Center().Padding(20).Gap(16).Children(func() {
 		ui.Text(c, "Counter preferences").FontSize(20).Bold()
-		if ui.Checkbox(c, &doubleStep, "Increment by two").Changed() {
-			app.update(func(s *appState) { s.DoubleStep = doubleStep })
+		if err := doubleStep.Edit(func(value *bool) bool { return ui.Checkbox(c, value, "Increment by two").Changed() }); err != nil {
+			log.Print(err)
 		}
 	})
 }

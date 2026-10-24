@@ -7,6 +7,7 @@ type Reader[T any] interface {
 	Get() T
 	State() T
 	Snapshot() Snapshot[T]
+	SubscribeSnapshot(func(Snapshot[T])) func()
 	Version() uint64
 	ID() string
 	Done() <-chan struct{}

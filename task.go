@@ -28,6 +28,8 @@ type ActionOptions[I any] struct {
 	Key           func(I) string
 	MaxConcurrent int
 	QueueLimit    int
+	// Debounce delays LatestWins work per key until this interval after acceptance. Superseded inputs never start work. Zero preserves immediate scheduling; QueueAll rejects a positive delay.
+	Debounce time.Duration
 }
 
 // AsyncState describes the latest run. Progress is between zero and one; Error is diagnostic text. Treat the action's status store as read-only.
@@ -54,6 +56,8 @@ type Task struct {
 	event   ActionEvent
 	hooks   []ActionHooks
 	started bool
+	ready   bool
+	readyAt time.Time
 }
 
 func (t *Task) Status() ReadOnly[AsyncState] { return t.state.ReadOnly() }
@@ -101,13 +105,13 @@ func NewAsyncAction[T, I, R any](store *Store[T], name string, work func(context
 }
 
 func NewAsyncActionWithOptions[T, I, R any](store *Store[T], name string, work func(context.Context, I, func(float64)) (R, error), apply func(*T, R) error, options ActionOptions[I]) (*AsyncAction[T, I, R], error) {
-	if store == nil || work == nil || apply == nil || options.MaxConcurrent < 0 || options.QueueLimit < 0 || options.Policy > QueueAll {
+	if store == nil || work == nil || apply == nil || options.MaxConcurrent < 0 || options.QueueLimit < 0 || options.Policy > QueueAll || options.Debounce < 0 || (options.Policy == QueueAll && options.Debounce > 0) {
 		return nil, ErrInvalidAction
 	}
 	if options.Policy == QueueAll && options.MaxConcurrent == 0 {
 		options.MaxConcurrent = 1
 	}
-	if options.QueueLimit == 0 && options.MaxConcurrent > 0 {
+	if options.QueueLimit == 0 && (options.MaxConcurrent > 0 || options.Debounce > 0) {
 		options.QueueLimit = 64
 	}
 	a := &AsyncAction[T, I, R]{store: store, name: name, work: work, apply: apply, state: New(AsyncState{Name: name}), runs: make(map[*Task]struct{}), closedCh: make(chan struct{})}
@@ -169,7 +173,7 @@ func (a *AsyncAction[T, I, R]) Run(ctx context.Context, input I) (*Task, error) 
 	runCtx, cancel := context.WithCancelCause(ctx)
 	event.RunID, event.Key = a.next, key
 	initial := AsyncState{ID: a.next, Name: a.name, Running: true, Phase: TaskQueued, Key: key}
-	task := &Task{ID: a.next, ctx: runCtx, cancel: cancel, done: make(chan struct{}), key: key, state: New(initial), event: event, hooks: hooks}
+	task := &Task{ID: a.next, ctx: runCtx, cancel: cancel, done: make(chan struct{}), key: key, state: New(initial), event: event, hooks: hooks, ready: a.options.Debounce == 0, readyAt: time.Now().Add(a.options.Debounce)}
 	a.latestByKey[key] = task
 	a.runs[task] = struct{}{}
 	a.pending = append(a.pending, task)
@@ -195,6 +199,19 @@ func (a *AsyncAction[T, I, R]) run(task *Task, input I, initErr error) {
 	err := taskBoundary(func() error {
 		if initErr != nil {
 			return initErr
+		}
+		if a.options.Debounce > 0 {
+			timer := time.NewTimer(max(0, time.Until(task.readyAt)))
+			defer timer.Stop()
+			select {
+			case <-task.ctx.Done():
+				return context.Cause(task.ctx)
+			case <-timer.C:
+			}
+			a.mu.Lock()
+			task.ready = true
+			a.signalLocked()
+			a.mu.Unlock()
 		}
 		if err := a.acquire(task); err != nil {
 			return err
@@ -364,7 +381,14 @@ func (a *AsyncAction[T, I, R]) acquire(task *Task) error {
 		if cause := context.Cause(task.ctx); cause != nil {
 			return cause
 		}
-		if len(a.pending) > 0 && a.pending[0] == task && (a.options.MaxConcurrent == 0 || a.active < a.options.MaxConcurrent) {
+		firstReady := (*Task)(nil)
+		for _, pending := range a.pending {
+			if pending.ready && pending.ctx.Err() == nil {
+				firstReady = pending
+				break
+			}
+		}
+		if firstReady == task && (a.options.MaxConcurrent == 0 || a.active < a.options.MaxConcurrent) {
 			a.removePendingLocked(task)
 			a.active++
 			task.started = true

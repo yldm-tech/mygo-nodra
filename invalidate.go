@@ -22,29 +22,27 @@ func InvalidateProjectionWith[T, V any](source Reader[T], window *mygo.Window, p
 }
 
 // Invalidate requests a new frame of window's native Content whenever store publishes a snapshot. The subscription stops when the window closes; the returned function stops it earlier and is safe to call repeatedly. Nil inputs and destroyed windows subscribe to nothing. A callback already running when stopped may still request a frame.
-func Invalidate[T any](source Reader[T], window *mygo.Window) (stop func()) {
-	store := sourceStore(source)
-	if store == nil || window == nil {
+func Invalidate[T any](source Observable[T], window *mygo.Window) (stop func()) {
+	if !validObservable(source) || window == nil {
 		return func() {}
 	}
 	return bindInvalidation(window, func(redraw func()) func() {
-		return store.Subscribe(func(Snapshot[T]) { redraw() })
+		return source.SubscribeSnapshot(func(Snapshot[T]) { redraw() })
 	})
 }
 
 // InvalidateSelector requests a frame only when the selected value changes, using SubscribeSelector's equality rules. The subscription stops when the window closes or the returned function is called. Selectors run on writer goroutines and must be concurrency-safe; selected reference values follow the store's ownership policy.
-func InvalidateSelector[T any, V any](source Reader[T], window *mygo.Window, selector func(T) V) (stop func()) {
+func InvalidateSelector[T any, V any](source Observable[T], window *mygo.Window, selector func(T) V) (stop func()) {
 	return InvalidateSelectorWith(source, window, selector, SelectorOptions[V]{})
 }
 
 // InvalidateSelectorWith is InvalidateSelector with custom equality and optional immediate invalidation. Nil inputs and destroyed windows subscribe to nothing. As with Invalidate, stopping does not wait for callbacks already running.
-func InvalidateSelectorWith[T any, V any](source Reader[T], window *mygo.Window, selector func(T) V, options SelectorOptions[V]) (stop func()) {
-	store := sourceStore(source)
-	if store == nil || window == nil || selector == nil {
+func InvalidateSelectorWith[T any, V any](source Observable[T], window *mygo.Window, selector func(T) V, options SelectorOptions[V]) (stop func()) {
+	if !validObservable(source) || window == nil || selector == nil {
 		return func() {}
 	}
 	return bindInvalidation(window, func(redraw func()) func() {
-		return SubscribeSelectorWith(store, selector, func(_, _ V) { redraw() }, options)
+		return SubscribeSelectorWith(source, selector, func(_, _ V) { redraw() }, options)
 	})
 }
 

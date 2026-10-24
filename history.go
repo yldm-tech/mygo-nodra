@@ -15,28 +15,38 @@ var (
 var ErrHistoryBatch = errors.New("nodra: cannot undo or redo inside an open batch")
 
 var ErrHistoryGroup = errors.New("nodra: cannot undo or redo inside an open history group")
+var ErrInvalidHistory = errors.New("nodra: invalid history size configuration")
 
 // HistoryOptions configures recording. Equals excludes changes to irrelevant fields. Restore merges recorded fields into current state so ignored fields survive travel. Both functions must be pure, must not mutate arguments, and must not reenter the Store or History; they can run while those locks are held. With nil callbacks, every publication records and travel replaces the whole value.
 type HistoryOptions[T any] struct {
-	Limit   int
+	Limit int
+	// MaxBytes budgets estimated undo and redo payloads together; zero disables sizing. Positive budgets require Size. The current value, Store state, shared allocations and metadata are outside this estimate.
+	MaxBytes int64
+	// Size estimates one retained value. It must return a nonnegative value and follow Equals/Restore purity and lock rules. Invalid configurations or negative estimates panic with ErrInvalidHistory.
+	Size    func(T) int64
 	Equals  func(previous, next T) bool
 	Restore func(current, recorded T) T
 }
 
 // History records successful store snapshots and provides bounded undo/redo.
 type History[T any] struct {
-	store   *Store[T]
-	mu      sync.Mutex
-	undo    []T
-	redo    []T
-	current T
-	limit   int
-	version uint64
-	stop    func()
-	closed  bool
-	options HistoryOptions[T]
-	groups  int
-	grouped bool
+	store        *Store[T]
+	mu           sync.Mutex
+	undo         []historyEntry[T]
+	redo         []historyEntry[T]
+	current      T
+	limit        int
+	version      uint64
+	stop         func()
+	closed       bool
+	options      HistoryOptions[T]
+	groups       int
+	grouped      bool
+	bytes        uint64
+	currentBytes uint64
+	dropped      uint64
+	revision     uint64
+	state        *Store[HistoryState]
 }
 
 // Track starts recording changes to store. limit is the maximum number of
@@ -46,13 +56,20 @@ func Track[T any](store *Store[T], limit int) *History[T] {
 }
 
 func TrackWith[T any](store *Store[T], options HistoryOptions[T]) *History[T] {
-	h := &History[T]{store: store, limit: options.Limit, options: options}
+	if options.MaxBytes < 0 || (options.MaxBytes > 0 && options.Size == nil) {
+		panic(ErrInvalidHistory)
+	}
+	h := &History[T]{store: store, limit: options.Limit, options: options, state: New(HistoryState{MaxBytes: options.MaxBytes})}
 	if store == nil || options.Limit < 1 {
 		h.closed = true
+		h.revision++
+		h.publishStatus()
+		_ = h.state.Close()
 		return h
 	}
 	initial := store.Snapshot()
 	h.current, h.version = initial.Value, initial.Version
+	h.currentBytes = h.estimate(initial.Value)
 	h.stop = store.Subscribe(h.observe)
 	initialized := false
 	defer func() {
@@ -67,41 +84,49 @@ func TrackWith[T any](store *Store[T], options HistoryOptions[T]) *History[T] {
 }
 
 func (h *History[T]) observe(snapshot Snapshot[T]) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.observeLocked(snapshot)
+	func() {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		h.observeLocked(snapshot)
+	}()
+	h.publishStatus()
 }
 
 func (h *History[T]) observeLocked(snapshot Snapshot[T]) {
 	if h.closed || snapshot.Version <= h.version {
 		return
 	}
+	size := h.estimate(snapshot.Value)
 	if h.options.Equals == nil || !h.options.Equals(h.current, snapshot.Value) {
 		if h.groups == 0 || !h.grouped {
-			h.undo = append(h.undo, h.current)
-			if len(h.undo) > h.limit {
-				var zero T
-				h.undo[0] = zero
-				h.undo = h.undo[1:]
-			}
+			h.undo = append(h.undo, historyEntry[T]{h.current, h.currentBytes})
+			h.bytes += h.currentBytes
 			h.grouped = h.groups > 0
 		}
+		for _, entry := range h.redo {
+			h.bytes -= entry.bytes
+		}
 		h.redo = nil
+		h.trimLocked()
 	}
-	h.current, h.version = snapshot.Value, snapshot.Version
+	h.current, h.version, h.currentBytes = snapshot.Value, snapshot.Version, size
+	h.revision++
 }
 
 // BeginGroup merges edits across frames into one undo step while still publishing every update. Groups nest; the returned end function is idempotent. Concurrent writers join the group. Undo and Redo are rejected until all groups end. Filtering still applies, so a group containing only ignored changes adds no step.
 func (h *History[T]) BeginGroup() (func(), error) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	if h.closed {
+		h.mu.Unlock()
 		return nil, ErrClosed
 	}
 	if h.groups == 0 {
 		h.grouped = false
 	}
 	h.groups++
+	h.revision++
+	h.mu.Unlock()
+	h.publishStatus()
 	var once sync.Once
 	return func() {
 		once.Do(func() {
@@ -110,7 +135,9 @@ func (h *History[T]) BeginGroup() (func(), error) {
 			if h.groups == 0 {
 				h.grouped = false
 			}
+			h.revision++
 			h.mu.Unlock()
+			h.publishStatus()
 		})
 	}, nil
 }
@@ -128,7 +155,9 @@ func (h *History[T]) travel(undo bool) error {
 	if h.store == nil {
 		return ErrClosed
 	}
+	defer h.publishStatus()
 	var target T
+	var targetBytes uint64
 	// Choose and commit the history step under the source write lock. Stack
 	// changes happen only after the store's commit clone has succeeded, before
 	// any notifications can reenter history or a concurrent writer can commit.
@@ -156,10 +185,11 @@ func (h *History[T]) travel(undo bool) error {
 			}
 			return ErrNoRedo
 		}
-		target = stack[len(stack)-1]
+		target = stack[len(stack)-1].value
 		if h.options.Restore != nil {
 			target = h.options.Restore(*value, target)
 		}
+		targetBytes = h.estimate(target)
 		*value = target
 		return nil
 	}, func(version uint64) {
@@ -168,18 +198,22 @@ func (h *History[T]) travel(undo bool) error {
 		if h.closed {
 			return
 		}
+		var zero historyEntry[T]
 		if undo {
-			var zero T
+			h.bytes -= h.undo[len(h.undo)-1].bytes
 			h.undo[len(h.undo)-1] = zero
 			h.undo = h.undo[:len(h.undo)-1]
-			h.redo = append(h.redo, h.current)
+			h.redo = append(h.redo, historyEntry[T]{h.current, h.currentBytes})
 		} else {
-			var zero T
+			h.bytes -= h.redo[len(h.redo)-1].bytes
 			h.redo[len(h.redo)-1] = zero
 			h.redo = h.redo[:len(h.redo)-1]
-			h.undo = append(h.undo, h.current)
+			h.undo = append(h.undo, historyEntry[T]{h.current, h.currentBytes})
 		}
-		h.current, h.version = target, version
+		h.bytes += h.currentBytes
+		h.trimLocked()
+		h.current, h.version, h.currentBytes = target, version, targetBytes
+		h.revision++
 	})
 }
 
@@ -193,9 +227,13 @@ func (h *History[T]) Close() error {
 	h.closed = true
 	h.undo = nil
 	h.redo = nil
+	h.bytes = 0
+	h.revision++
 	h.mu.Unlock()
 	if h.stop != nil {
 		h.stop()
 	}
+	h.publishStatus()
+	_ = h.state.Close()
 	return nil
 }
