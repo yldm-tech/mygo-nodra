@@ -15,6 +15,10 @@ const directory = await mkdtemp(join(tmpdir(), 'nodra-devtools-'));
 const binary = join(directory, process.platform === 'win32' ? 'devtools.exe' : 'devtools');
 let browser;
 const children = [];
+let fixtureRevision = 100;
+function changesFixture(snapshot) {
+  return { ...snapshot, revision: ++fixtureRevision, cursor: Math.max(0, ...snapshot.events.map(event => event.sequence)), oldest: snapshot.events[0]?.sequence || 1, reset: true, more: false, storeIds: snapshot.stores.map(store => store.id), capture: { paused: false, sampleIntervalMS: 0, skipped: 0 } };
+}
 
 async function demo(restore) {
   const child = spawn(binary, ['-interval=1h', ...(restore ? ['-restore'] : [])], { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -115,6 +119,43 @@ try {
   await page.locator('#clear').click();
   await page.waitForFunction(() => document.querySelectorAll('.event').length === 0);
   assert.equal(await page.locator('.store').count(), 1);
+  // Capture controls affect diagnostics, while real application writes continue.
+  await page.locator('#capture-pause').click();
+  await page.getByRole('button', { name: 'Resume capture', exact: true }).waitFor();
+  async function replaceCount(target, count) {
+    await target.evaluate(async value => {
+      const response = await fetch('/api/restore', { method: 'POST', headers: { Authorization: `Bearer ${location.hash.slice(1)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ storeId: 'counter', state: { count: value } }) });
+      if (!response.ok) throw new Error(await response.text());
+    }, count);
+  }
+  await replaceCount(page, 10);
+  await page.locator('#refresh').click();
+  assert.match(await page.locator('#state').innerText(), /"count": 9/);
+  assert.equal(await page.locator('.event').count(), 0);
+  await page.locator('#capture-pause').click();
+  await page.waitForFunction(() => document.querySelector('#state').textContent.includes('"count": 10'));
+  await page.locator('#capture-rate').selectOption('1000');
+  for (let count = 11; count <= 15; count++) await replaceCount(page, count);
+  await page.locator('#refresh').click();
+  assert.match(await page.locator('#capture-status').innerText(), /skipped/);
+  await page.locator('#capture-rate').selectOption('0');
+  await page.waitForFunction(() => document.querySelector('#state').textContent.includes('"count": 15'));
+  // A fresh session loads a bounded latest page; export still contains all retained history.
+  const paging = await browser.newPage();
+  paging.on('pageerror', error => errors.push(error.message));
+  const pagingURL = await demo(true);
+  await paging.goto(pagingURL);
+  await paging.getByText('Connected', { exact: true }).waitFor();
+  for (let count = 2; count < 122; count++) await replaceCount(paging, count);
+  await paging.reload();
+  await paging.waitForFunction(() => document.querySelectorAll('.event').length === 50);
+  await paging.locator('#history-more').click();
+  await paging.waitForFunction(() => document.querySelectorAll('.event').length === 100);
+  const fullDownload = paging.waitForEvent('download');
+  await paging.locator('#export').click();
+  const fullSnapshot = JSON.parse(await readFile(await (await fullDownload).path(), 'utf8'));
+  assert.equal(fullSnapshot.events.length, 124);
+  await paging.close();
   const readonly = await browser.newPage();
   readonly.on('pageerror', error => errors.push(error.message));
   const readonlyURL = await demo(false);
@@ -131,7 +172,7 @@ try {
     stores: [{ id: storeID, version: 2, generation: 1, state: { text: '</script><img src=x onerror=alert(1)>', long: 'x'.repeat(500), ready: true } }],
     events: [{ storeId: storeID, kind: 'mutation', mutation: 'direct', version: 1, generation: 1, sequence: 1, at: new Date().toISOString(), previous: { ready: false }, state: null }]
   };
-  await edge.route('**/api/snapshot', route => route.fulfill({ json: fixture }));
+  await edge.route('**/api/changes**', route => route.fulfill({ json: changesFixture(fixture) }));
   await edge.goto(readonlyURL);
   await edge.getByText('Connected', { exact: true }).waitFor();
   assert.equal(await edge.locator('.json-string').first().textContent(), '"</script><img src=x onerror=alert(1)>"');
@@ -141,13 +182,13 @@ try {
   assert.equal(await edge.locator('#state .code-text').textContent(), 'null');
   await edge.locator('#tab-changes').click();
   assert.match(await edge.locator('#changes').innerText(), /null/);
-  await edge.unroute('**/api/snapshot');
-  await edge.route('**/api/snapshot', route => route.fulfill({ json: { stores: [], events: [] } }));
+  await edge.unroute('**/api/changes**');
+  await edge.route('**/api/changes**', route => route.fulfill({ json: changesFixture({ stores: [], events: [] }) }));
   await edge.locator('#refresh').click();
   await edge.locator('#stores').getByText('No stores attached', { exact: true }).waitFor();
   assert.equal(await edge.locator('#copy-state').isDisabled(), true);
-  await edge.unroute('**/api/snapshot');
-  await edge.route('**/api/snapshot', route => route.fulfill({ status: 503, body: 'Session unavailable' }));
+  await edge.unroute('**/api/changes**');
+  await edge.route('**/api/changes**', route => route.fulfill({ status: 503, body: 'Session unavailable' }));
   await edge.locator('#refresh').click();
   await edge.getByText('Disconnected', { exact: true }).waitFor();
   assert.match(await edge.locator('#message').innerText(), /Session unavailable/);
@@ -156,7 +197,7 @@ try {
   large.on('pageerror', error => errors.push(error.message));
   const largeState = { preferences: { theme: 'violet', language: 'English' }, entries: Array.from({ length: 2500 }, (_, n) => ({ name: n === 2499 ? 'needle-value' : `Word ${n}`, count: n })) };
   const largeFixture = { stores: [{ id: 'dictionary', generation: 1, version: 7, state: largeState }], events: [], retention: { bytes: 2048, maxBytes: 16777216, maxEvents: 200, dropped: 8 } };
-  await large.route('**/api/snapshot', route => route.fulfill({ json: largeFixture }));
+  await large.route('**/api/changes**', route => route.fulfill({ json: changesFixture(largeFixture) }));
   await large.goto(readonlyURL);
   await large.getByText('Connected', { exact: true }).waitFor();
   assert.equal(await large.locator('#state .code-line').count(), 1000);
@@ -202,7 +243,7 @@ try {
   assert.doesNotMatch(await large.locator('#changes').innerText(), /identical/);
 
   assert.deepEqual(errors, []);
-  console.log('DevTools browser smoke passed: inspection, errors, type/text filters, clipboard, keyboard tabs, saved theme, responsive layouts, restore, JSON validation, retained edits, export, diff, clear, read-only mode, lazy trees, paginated JSON, state search and diff limits.');
+  console.log('DevTools browser smoke passed: inspection, errors, type/text filters, clipboard, keyboard tabs, saved theme, responsive layouts, restore, JSON validation, retained edits, complete export, diff, clear, read-only mode, lazy trees, paginated JSON/history, incremental updates, pause/resume, sampling, state search and diff limits.');
 } finally {
   if (browser) await browser.close();
   for (const child of children) {

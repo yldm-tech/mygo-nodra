@@ -202,3 +202,9 @@ body[data-connection="disconnected"] .live-button { color: var(--muted); backgro
 .search-hit code { font-size: 12px; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
 #retention-status { margin-left: auto; font-size: 10px; white-space: nowrap; }
 @media (max-width: 950px) { #retention-status { display: none; } .code-toolbar { flex-wrap: wrap; height: auto; min-height: 39px; padding-top: 7px; padding-bottom: 7px; } .code-toolbar > span:first-child { flex-basis: 100%; } }
+
+.capture-controls { display: grid; gap: 8px; margin-bottom: 12px; }
+.capture-controls label { display: grid; gap: 5px; color: var(--muted); font-size: 11px; }
+.capture-controls select { width: 100%; min-width: 0; padding: 6px; background: var(--surface); color: var(--text); border: 1px solid var(--line); border-radius: 5px; }
+.history-more { margin: 8px 14px; }
+@media (max-width: 760px) { .session-card:has(.capture-controls) { display: block; } .session-card > p, .session-card .session-stats, .session-card > .eyebrow { display: none; } .session-card { padding: 8px; } .session-card strong { font-size: 10px; } .sidebar-bottom { padding: 8px; } .capture-controls button { font-size: 10px; padding: 4px; } }

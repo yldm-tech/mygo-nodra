@@ -14,7 +14,10 @@ type Snapshot[T any] struct {
 	Value   T
 	Version uint64
 }
-type listener[T any] func(Snapshot[T])
+type listener[T any] struct {
+	fn       func(Snapshot[T])
+	borrowed bool
+}
 
 type SubscribeOptions[T any] struct {
 	Immediate bool
@@ -31,6 +34,7 @@ type Store[T any] struct {
 	actionListeners   map[uint64]func(ActionEvent)
 	actionHooks       map[uint64]ActionHooks
 	id                string
+	nextAction        uint64
 	batch             int
 	dirty             bool
 	batchBefore       T
@@ -231,7 +235,7 @@ func (s *Store[T]) SubscribeWith(options SubscribeOptions[T], fn func(Snapshot[T
 				if version != comparedVersion || hasPrevious != hadPrevious {
 					return true, false
 				}
-				if !equal {
+				if !equal && options.Equals != nil {
 					previous, hasPrevious = s.copy(snapshot.Value), true
 				}
 				version, hasVersion = snapshot.Version, true
@@ -253,7 +257,7 @@ func (s *Store[T]) SubscribeWith(options SubscribeOptions[T], fn func(Snapshot[T
 	}
 	s.nextID++
 	id := s.nextID
-	s.listeners[id] = wrapped
+	s.listeners[id] = listener[T]{fn: wrapped}
 	initial := Snapshot[T]{s.value, s.version}
 	s.mu.Unlock()
 	var once sync.Once
@@ -301,8 +305,12 @@ func (s *Store[T]) mutationListenersCopyLocked() []func(Mutation[T]) {
 	return out
 }
 func (s *Store[T]) notify(listeners []listener[T], snapshot Snapshot[T]) {
-	for _, fn := range listeners {
-		fn(Snapshot[T]{s.copy(snapshot.Value), snapshot.Version})
+	for _, sub := range listeners {
+		value := snapshot.Value
+		if !sub.borrowed {
+			value = s.copy(value)
+		}
+		sub.fn(Snapshot[T]{value, snapshot.Version})
 	}
 }
 func (s *Store[T]) notifyMutation(listeners []func(Mutation[T]), mutation Mutation[T]) {

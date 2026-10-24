@@ -191,3 +191,17 @@ Nodra intentionally maps concepts, not framework syntax:
 | debounced persistence | `AutoSaveAsync`, `Flush`, `Close` | One coalescing worker with explicit durability barriers |
 
 Go has no component hooks or proxy-based mutable objects. A MyGo view reads a snapshot during its render and subscribes to invalidation with `Invalidate`; background work calls `Update` and the subscription requests a new native frame.
+
+## Async work and commit boundary
+
+`AsyncAction` has a generation lock independent of its source Store. A run does work without either lock, then takes the source write lock and generation lock to check ownership and apply its result. The generation lock remains held through commit cloning and is released before Store notifications. Failed mutations and clone panics release both locks without a partial commit. Starting a newer run cannot pass an older run's accepted commit boundary; newer work never has its results overwritten by an obsolete run. Cancellation is cooperative for work, and external effects are outside the rollback boundary. The status Store and source action events are separate observations, so they do not form a multi-store transaction.
+
+Each run owns its context and completion channel. Source closure requests cancellation; explicit Close prevents new runs, cancels all runs and waits within the owner's context. The final run closes the status Store only after its terminal status is committed. Work, status subscribers and action hooks are asynchronous user-code boundaries: panics become task errors. A task cannot wait for its own completion from a synchronous callback. Work that ignores cancellation can outlive a timed-out Close; callers can close again to wait after releasing that work.
+
+## Projection ownership and cost
+
+`Select` is an explicit borrowed-read API. Its callback executes under the source read lock, does not receive a full-state clone, and must return owned projection data without mutating or retaining source references. `SubscribeProjectionWith` borrows immutable committed snapshots and reuses selector equality, version ordering, initialization catch-up and panic cleanup. Existing reads and selectors retain full-state isolation. Normal subscriptions no longer retain/copy an equality baseline when no equality function is configured. Benchmarks cover 10,000-entry reads and concurrent updates with one or ten normal/projected selectors.
+
+## Edit history policy
+
+`TrackWith` can compare only relevant fields and merge recorded values into current state on travel. Ignored changes advance the observed source version without adding a step or invalidating redo. Restore must explicitly merge ignored fields when they should survive travel. Policy callbacks are pure and non-reentrant because history catches up while holding its lock and, during travel, the Store lock. BeginGroup keeps notifications live while recording only the first relevant baseline; groups nest and may span frames. All writers join an open group. Undo/redo during a group returns ErrHistoryGroup. Evicted and popped entries are zeroed so unused slice capacity does not retain old state references.
