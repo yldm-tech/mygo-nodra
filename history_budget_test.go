@@ -104,3 +104,37 @@ func TestHistoryBudgetConcurrentAndInvalidEstimators(t *testing.T) {
 }
 
 func asError(value any) error { err, _ := value.(error); return err }
+
+func TestZeroHistoryClose(t *testing.T) {
+	var history History[int]
+	requireNoError(t, history.Close())
+	if !errors.Is(history.Close(), ErrClosed) {
+		t.Fatal("zero history close is not idempotent")
+	}
+}
+
+func TestHistoryCloseReleasesStatusAfterSubscriberPanic(t *testing.T) {
+	store := New(0)
+	history := Track(store, 10)
+	history.Status().Subscribe(func(s Snapshot[HistoryState]) {
+		if s.Value.Closed {
+			panic("closed observer")
+		}
+	})
+	func() {
+		defer func() {
+			if recover() != "closed observer" {
+				t.Error("expected notification panic")
+			}
+		}()
+		_ = history.Close()
+	}()
+	select {
+	case <-history.Status().Done():
+	default:
+		t.Fatal("panic leaked history status")
+	}
+	if listenerCount(store) != 0 {
+		t.Fatal("panic leaked history recording")
+	}
+}

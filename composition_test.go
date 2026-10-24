@@ -4,6 +4,8 @@ import (
 	"slices"
 	"sync"
 	"testing"
+
+	"github.com/egoist/mygo"
 )
 
 func TestProjectedDerivedChainPreservesCloneBoundary(t *testing.T) {
@@ -37,6 +39,8 @@ func TestObservableNilBoundariesAndDerivedSelector(t *testing.T) {
 	var got int
 	stop := SubscribeSelector(value, func(v int) int { return v + 1 }, func(v int) { got = v })
 	defer stop()
+	stopRedraw := Invalidate(value, &mygo.Window{})
+	defer stopRedraw()
 	requireNoError(t, source.Set(2))
 	if got != 5 {
 		t.Fatal("selector did not accept derived value")

@@ -55,6 +55,9 @@ var errHistoryStatusUnchanged = errors.New("nodra: history status unchanged")
 
 // Status subscribers run after releasing both the history lock and source write lock. A delayed publisher cannot replace a newer status or revive a closed status Store.
 func (h *History[T]) publishStatus() {
+	if h.state == nil {
+		return
+	}
 	h.mu.Lock()
 	state := HistoryState{Revision: h.revision, UndoEntries: len(h.undo), RedoEntries: len(h.redo), Bytes: int64(h.bytes), MaxBytes: h.options.MaxBytes, Dropped: h.dropped, Grouped: h.groups > 0, Closed: h.closed, CanUndo: !h.closed && h.groups == 0 && len(h.undo) > 0, CanRedo: !h.closed && h.groups == 0 && len(h.redo) > 0}
 	h.mu.Unlock()

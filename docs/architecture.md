@@ -222,3 +222,13 @@ Task status revisions prevent overlapping progress notifications from replacing 
 ## Recovery boundary
 
 Persistence validation happens on isolated snapshots/decoded values before replacement, never by mutating Store-owned state. File backup is a second atomic file replacement after the primary; backup failure can therefore report a partially successful Save. Loading a backup is a read plus validated memory replacement and deliberately does not repair or delete the primary. Startup must decide how to handle a failed primary load before enabling autosave. The library does not silently choose a recovery policy or coordinate independent writers.
+
+## Value composition, history budgets and progress control
+
+Observable is a minimal snapshot/subscription boundary for Stores, read-only views and derived values. Derived snapshot subscribers receive source versions without exposing a writable Store. Combine protects its latest input pair and per-source versions with one private mutex; it releases that mutex before projecting or notifying. A combination's local version orders accepted input changes; it provides eventual consistency, not multi-source atomicity or glitch-free diamond graphs. Constructor catch-up and existing derived version checks discard obsolete work. Close releases source subscriptions, while derived references remain read-only under the existing ownership contract.
+
+History caches application size estimates alongside undo/redo values and budgets both stacks. Estimators run before stack changes using the existing pure callback contract. Internal commit bookkeeping invokes no user callbacks, then availability is published to a separate read-only status Store after releasing both locks. A history revision prevents late publishers from replacing newer availability. Current state and metadata are outside the payload estimate.
+
+Debounce timers wait outside worker slots. LatestWins retains an independent deadline per key and supersedes previous waiting work; only ready uncanceled pending tasks compete for slots. QueueAll rejects debounce instead of silently dropping accepted inputs. Close cancels timers through the normal task context and waits on task completion.
+
+Inspector task progress coalescing is opt-in and independent of mutation sampling. A retained running task owns at most one bounded pending Event and trailing timer, guarded by Inspector.mu. Lifecycle changes bypass the interval; terminal capture, eviction and every detach/shutdown boundary release timer ownership. Timer callbacks recheck inspector state, attachment identity and timer ownership before recording, preventing delayed callbacks from reviving cleared, detached or completed work.

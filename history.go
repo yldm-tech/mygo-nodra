@@ -49,8 +49,7 @@ type History[T any] struct {
 	state        *Store[HistoryState]
 }
 
-// Track starts recording changes to store. limit is the maximum number of
-// undo entries; values below one disable history recording.
+// Track starts recording changes to store. limit is the maximum number of undo entries; values below one disable history recording.
 func Track[T any](store *Store[T], limit int) *History[T] {
 	return TrackWith(store, HistoryOptions[T]{Limit: limit})
 }
@@ -158,9 +157,7 @@ func (h *History[T]) travel(undo bool) error {
 	defer h.publishStatus()
 	var target T
 	var targetBytes uint64
-	// Choose and commit the history step under the source write lock. Stack
-	// changes happen only after the store's commit clone has succeeded, before
-	// any notifications can reenter history or a concurrent writer can commit.
+	// Choose and commit the history step under the source write lock. Stack changes happen only after the store's commit clone has succeeded, before any notifications can reenter history or a concurrent writer can commit.
 	return h.store.updateCommitted("", MutationDirect, func(value *T) error {
 		current := Snapshot[T]{*value, h.store.version}
 		h.mu.Lock()
@@ -233,7 +230,9 @@ func (h *History[T]) Close() error {
 	if h.stop != nil {
 		h.stop()
 	}
+	if h.state != nil {
+		defer func() { _ = h.state.Close() }()
+	}
 	h.publishStatus()
-	_ = h.state.Close()
 	return nil
 }

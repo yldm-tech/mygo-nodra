@@ -16,9 +16,7 @@ type SelectorOptions[V any] struct {
 	Equals    func(previous, next V) bool
 }
 
-// SubscribeSelectorWith calls fn with current and previous selected values.
-// It catches up after registration and ignores obsolete computations. Callbacks
-// run on writer goroutines and may overlap, as with Store.Subscribe.
+// SubscribeSelectorWith calls fn with current and previous selected values. It catches up after registration and ignores obsolete computations. Callbacks run on writer goroutines and may overlap, as with Store.Subscribe.
 func SubscribeSelectorWith[T any, V any](source Observable[T], selector func(T) V, fn func(current, previous V), options SelectorOptions[V]) func() {
 	if !validObservable(source) || selector == nil || fn == nil {
 		return func() {}
@@ -97,8 +95,7 @@ func selectorEqual[V any](previous, next V) bool {
 	return reflect.DeepEqual(previous, next)
 }
 
-// Derived is a memoized getter derived from a store. It recomputes when the
-// source publishes and only notifies listeners when the selected value changes.
+// Derived is a memoized getter derived from an observable value. It recomputes when the source publishes and only notifies listeners when the selected value changes. Reference values and listener arguments remain read-only.
 type Derived[T any, V any] struct {
 	source            *Store[T]
 	selector          func(T) V
