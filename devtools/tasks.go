@@ -12,7 +12,7 @@ func traceEvent(node *attached, trace nodra.ActionTrace) Event {
 	if trace.Err != nil {
 		message = trace.Err.Error()
 	}
-	return Event{StoreID: node.view.ID, Generation: node.view.Generation, Kind: "task", ActionID: trace.ID, RunID: trace.RunID, Key: trace.Key, Name: trace.Name, Phase: trace.Phase, Progress: trace.Progress, TaskVersion: trace.TaskVersion, TraceRevision: trace.Revision, Version: trace.Version, Committed: trace.Committed, At: trace.At, Duration: trace.Duration, Error: message}
+	return Event{StoreID: node.view.ID, Generation: node.view.Generation, Kind: "task", ActionID: trace.ID, RunID: trace.RunID, Key: trace.Key, Name: trace.Name, Phase: trace.Phase, Progress: trace.Progress, TaskVersion: trace.TaskVersion, TraceRevision: trace.Revision, Version: trace.Version, Committed: trace.Committed, At: trace.At, Duration: trace.Duration, Metrics: trace.Metrics, Error: message}
 }
 
 func (i *Inspector) tasksLocked() []Event {
@@ -75,6 +75,7 @@ func (i *Inspector) recordTrace(node *attached, trace nodra.ActionTrace) {
 	if !i.allowCapture(node, false) {
 		return
 	}
+	event := i.redactEvent(traceEvent(node, trace))
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if i.closed || i.paused || i.stores[node.view.ID] != node {
@@ -100,7 +101,6 @@ func (i *Inspector) recordTrace(node *attached, trace nodra.ActionTrace) {
 	if i.options.TaskProgressInterval > 0 && trace.Phase == nodra.TaskRunning && trace.Err == nil && previous != nil && previous.Phase == nodra.TaskRunning && progress != nil {
 		remaining := i.options.TaskProgressInterval - time.Since(progress.last)
 		if remaining > 0 {
-			event := traceEvent(node, trace)
 			if eventBytes(event) > i.options.MaxHistoryBytes {
 				return
 			}
@@ -108,25 +108,30 @@ func (i *Inspector) recordTrace(node *attached, trace nodra.ActionTrace) {
 			progress.hasPending = true
 			node.view.TaskProgressCoalesced++
 			if progress.timer == nil {
-				progress.timer = time.AfterFunc(remaining, func() { i.flushProgress(node, trace.ID, progress) })
+				id := event.ActionID
+				progress.timer = time.AfterFunc(remaining, func() { i.flushProgress(node, id, progress) })
 			}
 			return
 		}
 	}
-	i.recordTaskLocked(node, traceEvent(node, trace))
+	i.recordTaskLocked(node, event)
 }
 
 // A resumed inspector can recover currently active tasks but cannot reconstruct outcomes omitted during pause. Mark those summaries explicitly instead of claiming success or cancellation.
 func (i *Inspector) refreshTasks(node *attached, snapshot nodra.TaskSnapshot) {
+	events := make([]Event, len(snapshot.Tasks))
+	for n, trace := range snapshot.Tasks {
+		events[n] = i.redactEvent(traceEvent(node, trace))
+	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if i.closed || i.paused || i.stores[node.view.ID] != node {
 		return
 	}
 	active := make(map[uint64]bool, len(snapshot.Tasks))
-	for _, trace := range snapshot.Tasks {
-		active[trace.ID] = true
-		if i.retainTaskLocked(node, traceEvent(node, trace)) {
+	for _, event := range events {
+		active[event.ActionID] = true
+		if i.retainTaskLocked(node, event) {
 			i.revision++
 			node.revision = i.revision
 		}

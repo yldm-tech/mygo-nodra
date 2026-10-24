@@ -186,6 +186,12 @@
       progress.setAttribute('aria-label', `${task.name} progress`);
       const meta = element('span', 'task-meta', `Action #${task.actionId} · Run #${task.runId}${task.key ? ` · ${task.key}` : ''} · ${Math.round((task.progress || 0) * 100)}%${task.committed ? ` · committed v${task.version}` : ''}`);
       button.append(heading, progress, meta);
+      if (task.metrics) {
+        const m = task.metrics;
+        const phases = [['Debounce', m.debounce], ['Queue', m.queue], ['Work', m.work], ['Commit', m.commit]];
+        const timing = element('span', 'task-meta task-timing', phases.map(([label, value]) => `${label} ${((value || 0) / 1e6).toFixed(2)} ms`).join(' · '));
+        button.append(timing, element('span', 'task-meta', `${m.queueDepth || 0} waiting · ${m.activeWorkers || 0} active workers`));
+      }
       if (task.phase === 'unobserved') button.append(element('span', 'task-note', 'Task ended outside capture; outcome unavailable.'));
       else if (task.error) button.append(element('span', 'task-note', task.error));
       button.onclick = () => { actionFilter = { id: task.actionId, generation: task.generation }; sequence = null; render(); };

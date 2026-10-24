@@ -253,7 +253,7 @@ try {
       { sequence: 3, generation: 1, storeId: 'workspace', actionId: 22, kind: 'task', name: 'Read metadata', phase: 'queued', at: now }
     ],
     tasks: [
-      { actionId: 21, runId: 1, generation: 1, storeId: 'workspace', name: 'Index workspace', key: 'documents', phase: 'running', progress: .4, at: now },
+      { actionId: 21, runId: 1, generation: 1, storeId: 'workspace', name: 'Index workspace', key: 'documents', phase: 'running', progress: .4, at: now, metrics: { debounce: 150e6, queue: 25e6, work: 800e6, commit: 0, queueDepth: 1, activeWorkers: 2 } },
       { actionId: 22, runId: 2, generation: 1, storeId: 'workspace', name: 'Read metadata', key: 'photos', phase: 'queued', progress: 0, at: now },
       { actionId: 20, runId: 3, generation: 1, storeId: 'workspace', name: 'Save preferences', phase: 'failed', error: 'Disk is full', at: now }
     ]
@@ -263,6 +263,8 @@ try {
   await tasks.getByText('Connected', { exact: true }).waitFor();
   await tasks.locator('#tab-tasks').click();
   assert.equal(await tasks.locator('.task-card').count(), 3);
+  assert.match(await tasks.locator('.task-timing').innerText(), /Debounce 150.00 ms.*Queue 25.00 ms.*Work 800.00 ms.*Commit 0.00 ms/);
+  assert.match(await tasks.locator('.task-card[data-action-id="21"]').innerText(), /1 waiting.*2 active workers/);
   assert.match(await tasks.locator('#task-summary').innerText(), /2 active.*2 summaries omitted.*98 progress updates coalesced/);
   assert.equal(await tasks.getByRole('progressbar', { name: 'Index workspace progress' }).getAttribute('value'), '0.4');
   await tasks.locator('.task-card[data-action-id="21"]').click();

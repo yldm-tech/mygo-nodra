@@ -40,6 +40,15 @@ type Options struct {
 	MaxHistoryBytes int
 	AllowRestore    bool
 	Redact          func(storeID string, state json.RawMessage) (json.RawMessage, error)
+	// RedactMetadata filters names, task keys and error text before retention, including snapshots and pending progress. It must be concurrency-safe. Failure or panic discards all original metadata and records a fixed diagnostic. Store IDs are application-supplied public labels and are not filtered.
+	RedactMetadata func(storeID string, metadata Metadata) (Metadata, error)
+}
+
+// Metadata contains diagnostic text that may include application secrets. Numeric correlation IDs and lifecycle fields are deliberately excluded.
+type Metadata struct {
+	Name  string
+	Key   string
+	Error string
 }
 
 type Store struct {
@@ -57,6 +66,7 @@ type Store struct {
 // Event sequences describe capture order, not an ordering guarantee between
 // concurrent writers. Version and At preserve the source mutation's metadata.
 type Event struct {
+	Metrics       nodra.TaskMetrics  `json:"metrics"`
 	RunID         uint64             `json:"runId,omitempty"`
 	Key           string             `json:"key,omitempty"`
 	Phase         nodra.TaskPhase    `json:"phase,omitempty"`
@@ -164,8 +174,10 @@ func Attach[T any](i *Inspector, id string, source nodra.Reader[T]) (func(), err
 	}
 	initial := source.Snapshot()
 	state, stateErr := i.encode(id, initial.Value)
+	initialEvent := i.redactEvent(Event{StoreID: id, Kind: "snapshot", Version: initial.Version, At: time.Now().UTC(), State: state, Error: stateErr})
 	node := &attached{view: Store{ID: id, Version: initial.Version, State: state, Error: stateErr,
 		Restorable: false}}
+	node.view.Error = initialEvent.Error
 	node.capture = func() {
 		latest := source.Snapshot()
 		raw, message := i.encode(id, latest.Value)
@@ -193,7 +205,8 @@ func Attach[T any](i *Inspector, id string, source nodra.Reader[T]) (func(), err
 	}
 	i.stores[id] = node
 	node.view.Generation = i.next + 1
-	i.appendLocked(Event{StoreID: id, Generation: node.view.Generation, Kind: "snapshot", Version: initial.Version, At: time.Now().UTC(), State: state, Error: stateErr})
+	initialEvent.Generation = node.view.Generation
+	i.appendLocked(initialEvent)
 	node.revision = i.revision
 	i.mu.Unlock()
 	stopMutation := source.SubscribeMutations(func(m nodra.Mutation[T]) {
@@ -214,7 +227,7 @@ func Attach[T any](i *Inspector, id string, source nodra.Reader[T]) (func(), err
 			message = a.Err.Error()
 		}
 		i.record(node, Event{StoreID: id, Kind: "action", ActionID: a.ID, Name: a.Name, At: a.Finished,
-			RunID: a.RunID, Key: a.Key, Committed: a.Committed, Version: a.Version, Duration: a.Duration, Error: message}, "", false)
+			RunID: a.RunID, Key: a.Key, Committed: a.Committed, Version: a.Version, Duration: a.Duration, Metrics: a.Metrics, Error: message}, "", false)
 	})
 	stopTrace := source.SubscribeActionTrace(func(trace nodra.ActionTrace) { i.recordTrace(node, trace) })
 	watcherStop := make(chan struct{})
@@ -317,6 +330,11 @@ func eventBytes(event Event) int {
 }
 
 func (i *Inspector) record(node *attached, event Event, stateErr string, update bool) {
+	stateValid := stateErr == ""
+	event = i.redactEvent(event)
+	if update {
+		stateErr = i.redactEvent(Event{StoreID: event.StoreID, Error: stateErr}).Error
+	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if i.closed || i.stores[node.view.ID] != node {
@@ -329,7 +347,7 @@ func (i *Inspector) record(node *attached, event Event, stateErr string, update 
 	}
 	if update && event.Version >= node.view.Version {
 		node.view.Version, node.view.State, node.view.Error = event.Version, event.State, stateErr
-		node.view.Restorable = !node.view.Closed && node.restore != nil && i.options.AllowRestore && i.options.Redact == nil && stateErr == ""
+		node.view.Restorable = !node.view.Closed && node.restore != nil && i.options.AllowRestore && i.options.Redact == nil && stateValid
 	}
 	event.Generation = node.view.Generation
 	i.appendLocked(event)

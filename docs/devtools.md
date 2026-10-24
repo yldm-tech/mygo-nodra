@@ -92,13 +92,21 @@ inspector := devtools.New(devtools.Options{
 })
 ```
 
-Redact runs before JSON is retained, including both previous/current mutation
-values, initial state and catch-up snapshots. It must be concurrency-safe and
-return valid JSON. A redacted inspector is always read-only so masked state can
-never be restored. Action names/errors are diagnostic strings and are not passed
-through the state redactor; keep sensitive data out of those strings too. Session
-URLs and exported debug snapshots should stay with the intended development
-session. No automatic publishing or external telemetry is performed.
+Redact runs before JSON is retained, including both previous/current mutation values, initial state and catch-up snapshots. It must be concurrency-safe and return valid JSON. A state-redacted inspector is always read-only so masked state can never be restored.
+
+Use `RedactMetadata` alongside the state filter when names, task keys or error text may be sensitive:
+
+```go
+RedactMetadata: func(id string, m devtools.Metadata) (devtools.Metadata, error) {
+    m.Key = "[masked]"
+    if m.Error != "" {
+        m.Error = "Operation failed"
+    }
+    return m, nil
+},
+```
+
+Metadata redaction runs outside inspector locks and must be concurrency-safe. It covers initial/catch-up state errors, mutation/action names and errors, task snapshots at attachment/resume, pending progress payloads, the timeline, Tasks, incremental/history APIs and full export. Callback errors and panics discard all original text and retain only `metadata redaction failed`; callback errors are never exported. Numeric action/run IDs and generations remain intact for correlation. Metadata-only redaction does not disable restoration because it does not alter state. Store IDs are not filtered: supply public labels. Session URLs and exported debug snapshots should stay with the intended development session. No automatic publishing or external telemetry is performed.
 
 ## Demo and browser verification
 
@@ -148,7 +156,9 @@ The Tasks tab shows queued/running work, progress, keys and retained outcomes fo
 
 Task summaries survive ordinary mutation-history eviction. Each attached source has a separate summary budget using Options.Limit and Options.MaxHistoryBytes; TasksDropped reports omitted summaries. These budgets are additional to mutation/event retention and current state payloads. Delayed traces cannot resurrect an evicted or completed summary. Clear resets both retained events and task summaries. Detaching removes current summaries for that generation.
 
-Pause omits task diagnostics alongside other events; mutation sampling does not sample task lifecycle notifications. Resume reconciles current active tasks. If a previously captured task ended while capture was paused, its outcome is marked unobserved; the inspector cannot reconstruct success, cancellation or a committed version from an omitted event. Closed sources are labeled and cannot be restored. Task keys and diagnostic error messages should not contain credentials or secrets; the state Redact callback does not transform event metadata.
+Pause omits task diagnostics alongside other events; mutation sampling does not sample task lifecycle notifications. Resume reconciles current active tasks. If a previously captured task ended while capture was paused, its outcome is marked unobserved; the inspector cannot reconstruct success, cancellation or a committed version from an omitted event. Closed sources are labeled and cannot be restored. Use `RedactMetadata` to filter sensitive task keys, names and error text; the state Redact callback only filters state JSON.
+
+Task cards display debounce, eligible queue wait, work and commit attempt durations in milliseconds, plus waiting/active worker counts sampled for that action. The same `metrics` object is retained in task summaries and action events and exported by every inspection API. Commit includes Store lock wait, clone/apply and synchronous mutation notifications; failures can still have a commit duration. Work excludes Before hooks. Other hooks/status callbacks are outside these phases, so their sum need not equal total duration. Counts describe the action at event publication, not a continuously sampled global queue.
 
 Attach accepts Reader sources, including store.ReadOnly() and action.Status(). A read-only wrapper never acquires restoration capability, even when AllowRestore is true. Run `go run ./examples/workbench -devtools` for real native file search and settings-save task traces.
 
