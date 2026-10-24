@@ -8,7 +8,8 @@
 go get github.com/yldm-tech/nodra@latest
 ```
 
-Everything is in the root package, `github.com/yldm-tech/nodra`.
+The core API is in `github.com/yldm-tech/nodra`. The optional local inspector is
+in `github.com/yldm-tech/nodra/devtools`, so applications can omit its server and UI.
 
 ## MyGo usage
 
@@ -39,7 +40,8 @@ tasks.Update(func(value *[]Task) {
 ## What is included
 
 - Generic, concurrency-safe `Store[T]` with versioned snapshots
-- `Set`, `Update`, and `UpdateErr` with rollback on returned errors and panics
+- Opt-in `NewWithClone` / `DefineWithClone` for isolated mutable state and deep rollback
+- `Set`, `Update`, and `UpdateErr` with value rollback on returned errors and panics
 - `Subscribe` and `SubscribeWith` with immediate delivery and per-subscriber equality
 - `SubscribeSelector` and `SubscribeSelectorWith` for focused updates with previous values
 - `Derive` for memoized computed/getter values
@@ -53,27 +55,135 @@ tasks.Update(func(value *[]Task) {
 - `Track` history with bounded undo and redo
 - `Persistence[T]` with pluggable storage and codec interfaces
 - Ready-to-use `FileStorage` and `JSONCodec[T]` with atomic file replacement
+- `VersionedJSONCodec[T]` with sequential schema migrations and explicit legacy JSON support
 - `AutoSaveWithErrors` for observable persistence failures
+- `AutoSaveAsync` for debounced, coalesced writes with `Flush`, `Close` and an error stream
 - Context-bound, bounded `Watch` streams that close with the store
 - `Invalidate` to redraw a MyGo window when a store publishes
+- Optional DevTools with a local browser inspector, mutation/action timeline,
+  state diffs, snapshot export, JSON editing and opt-in state restoration
 
 ## Design guarantees
 
 - Store locks are released before user listeners run, so listeners can safely read or update the same store.
 - Versions increment once per published update, not once per mutation inside a batch.
 - Closing a store is permanent; updates return `nodra.ErrClosed` and active watches terminate.
-- Values are not deep copied. Use immutable value conventions or copy slices and maps at the update boundary.
+- By default, values are not deep copied. Copy reference types before changing them, or use `NewWithClone` with a complete clone function. Cloned stores isolate constructor and `Set` inputs, update candidates, reads, each subscriber, mutation metadata and reset state.
+- Selectors and derived getters catch up with changes during initialization and ignore computations from older versions once a newer version has been processed. Callbacks still run on writer goroutines and may run concurrently.
+- Concurrent `Save` calls on one `Persistence` instance are serialized from state capture through storage write, so a delayed save cannot overwrite a newer save. Keep one persistence instance per destination; `Load` is intended for startup before concurrent writes.
 - Watch channels are best effort and bounded; slow consumers may skip intermediate snapshots.
+
+## Isolated mutable state
+
+When state contains maps, slices or pointers, opt in to cloning instead of
+maintaining copy-on-write manually:
+
+```go
+store := nodra.NewWithClone(map[string]int{"count": 0}, func(v map[string]int) map[string]int {
+    return maps.Clone(v)
+})
+err := store.Transaction(func(state *map[string]int) error {
+    (*state)["count"]++
+    return validate(*state) // an error discards the candidate, including map changes
+})
+```
+
+Clone all mutable nested references too. The function must support concurrent
+calls and must not reenter the store. Each isolation boundary costs a copy; keep
+using `New` for immutable state or large data already managed with copy-on-write.
+Named factories support the same policy through `DefineWithClone`.
+
+## Versioned persistence
+
+`VersionedJSONCodec[T]` wraps state in `{"schemaVersion": N, "state": ...}`.
+`Migrations[n]` transforms state JSON from version n to n+1. With
+`AllowUnversioned: true`, existing raw JSON enters the chain at version zero:
+
+```go
+codec := nodra.VersionedJSONCodec[Settings]{
+    Version: 2,
+    AllowUnversioned: true,
+    Migrations: map[int]nodra.JSONMigration{
+        0: migrateLegacyToV1,
+        1: migrateV1ToV2,
+    },
+}
+persistence := nodra.NewPersistence(store, nodra.FileStorage{Path: path}, codec)
+err := persistence.Load(ctx) // completes migrations before changing the store
+```
+
+Missing migrations, invalid migration output and future schemas return errors.
+A failed load leaves the store and file untouched. Load before starting autosave;
+successful migration is written by a subsequent `Save` or autosave.
+
+## Write-behind persistence
+
+Move encoding and disk I/O off the goroutine updating the store:
+
+```go
+writer, err := persistence.AutoSaveAsync(ctx, nodra.AsyncOptions{
+    Debounce: 100 * time.Millisecond,
+})
+// Handle err before using writer.
+// Updates now coalesce on one worker; Flush bypasses the debounce delay.
+err = writer.Flush(flushCtx)
+// At application exit, stop updates and drain before canceling ctx or closing store.
+err = writer.Close(shutdownCtx)
+```
+
+The writer schedules the current state once at startup. `Flush` waits for the
+version visible at the call; canceling one flush wait leaves the worker running.
+Failed writes stay pending and retry on the next update or flush. `Errors()` is
+a bounded stream for background failures; `Flush` and `Close` return errors
+directly. `Close` stops observing, attempts the final flush, and stops even on
+failure. Retry a failed shutdown write with `persistence.Save` and a fresh context.
+Parent cancellation and store closure stop the worker without a guaranteed drain.
+
+[`examples/persistent`](examples/persistent/main.go) combines cloning, legacy
+migration, error handling and graceful shutdown:
+
+```sh
+go run ./examples/persistent -file /path/to/state.json
+```
 
 ## Repository layout
 
 ```text
 *.go                           store, history, persistence, MyGo invalidation, and tests (package nodra)
+devtools/                      optional inspector, local HTTP API and embedded browser UI
 examples/                      standalone and native MyGo examples
 docs/architecture.md           lifecycle and threading details
 ```
 
 The repository is one Go module, `github.com/yldm-tech/nodra`, with a single `go.mod` at the root.
+
+## DevTools
+
+```go
+import "github.com/yldm-tech/nodra/devtools"
+
+inspector := devtools.New(devtools.Options{}) // read-only by default
+defer inspector.Close()
+stop, err := devtools.Attach(inspector, "preferences", prefsStore)
+// Handle err before using stop; call stop when this store is no longer in scope.
+url, err := inspector.Listen() // random loopback port; open the full session URL
+```
+
+The browser shows multiple stores, live state, bounded mutation/action history,
+action durations and errors, before/after diffs, filtering and JSON export. Set
+`AllowRestore: true` explicitly to enable typed JSON editing and restoring a
+retained snapshot. Restoration calls Set and emits new events; it does not reverse
+external action effects. `Redact` filters state before capture and disables
+restoration. No external assets, services or frontend build step are required.
+
+Try the [interactive example](examples/devtools/main.go) and see the
+[DevTools guide](docs/devtools.md) for lifecycle, redaction and browser tests:
+
+```sh
+go run ./examples/devtools -restore
+```
+
+![Nodra DevTools inspecting a state change](docs/devtools.png)
 
 ## Verification
 
