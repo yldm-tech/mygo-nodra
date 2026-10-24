@@ -2,6 +2,7 @@ package nodra
 
 import (
 	"errors"
+	"reflect"
 	"sync"
 	"time"
 )
@@ -9,8 +10,8 @@ import (
 // Create is the Pinia/Zustand-style constructor name for a typed store.
 func Create[T any](initial T) *Store[T] { return New(initial) }
 
-// SelectorOptions configures a selector subscription.
-type SelectorOptions[V comparable] struct {
+// SelectorOptions configures a selector subscription. With no Equals function, comparable values use == (including pointer identity); other values use reflect.DeepEqual. A custom comparator can use slices.Equal or maps.Equal.
+type SelectorOptions[V any] struct {
 	Immediate bool
 	Equals    func(previous, next V) bool
 }
@@ -18,9 +19,13 @@ type SelectorOptions[V comparable] struct {
 // SubscribeSelectorWith calls fn with current and previous selected values.
 // It catches up after registration and ignores obsolete computations. Callbacks
 // run on writer goroutines and may overlap, as with Store.Subscribe.
-func SubscribeSelectorWith[T any, V comparable](store *Store[T], selector func(T) V, fn func(current, previous V), options SelectorOptions[V]) func() {
+func SubscribeSelectorWith[T any, V any](store *Store[T], selector func(T) V, fn func(current, previous V), options SelectorOptions[V]) func() {
 	if store == nil || selector == nil || fn == nil {
 		return func() {}
+	}
+	compare := options.Equals
+	if compare == nil {
+		compare = selectorEqual[V]
 	}
 	var mu sync.Mutex
 	initial := store.Snapshot()
@@ -47,10 +52,7 @@ func SubscribeSelectorWith[T any, V comparable](store *Store[T], selector func(T
 			old, comparedVersion := previous, version
 			mu.Unlock()
 			// Comparators may panic or read the source without holding our lock.
-			equal := old == current
-			if options.Equals != nil {
-				equal = options.Equals(old, current)
-			}
+			equal := compare(old, current)
 			mu.Lock()
 			if snapshot.Version <= version {
 				mu.Unlock()
@@ -80,6 +82,15 @@ func SubscribeSelectorWith[T any, V comparable](store *Store[T], selector func(T
 	changed(store.Snapshot())
 	initialized = true
 	return stop
+}
+
+// selectorEqual preserves == semantics when dynamic values are comparable too. Interfaces and structs containing interfaces can hold slices/maps at runtime.
+func selectorEqual[V any](previous, next V) bool {
+	a, b := reflect.ValueOf(previous), reflect.ValueOf(next)
+	if (!a.IsValid() || a.Comparable()) && (!b.IsValid() || b.Comparable()) {
+		return any(previous) == any(next)
+	}
+	return reflect.DeepEqual(previous, next)
 }
 
 // Derived is a memoized getter derived from a store. It recomputes when the

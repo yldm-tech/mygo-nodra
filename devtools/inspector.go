@@ -32,9 +32,13 @@ var (
 // valid JSON. Redacted inspectors are always read-only to avoid restoring masked
 // data. The default event limit is 200; state and event histories stay in memory.
 type Options struct {
-	Limit        int
-	AllowRestore bool
-	Redact       func(storeID string, state json.RawMessage) (json.RawMessage, error)
+	Limit int
+	// MaxStateBytes limits each encoded state after redaction (default 1 MiB).
+	MaxStateBytes int
+	// MaxHistoryBytes budgets retained state/text plus event metadata (16 MiB).
+	MaxHistoryBytes int
+	AllowRestore    bool
+	Redact          func(storeID string, state json.RawMessage) (json.RawMessage, error)
 }
 
 type Store struct {
@@ -68,6 +72,15 @@ type Snapshot struct {
 	CapturedAt time.Time `json:"capturedAt"`
 	Stores     []Store   `json:"stores"`
 	Events     []Event   `json:"events"`
+	Retention  Retention `json:"retention"`
+}
+
+// Retention describes the bounded timeline, not total process memory. Bytes counts state/text bytes and a fixed allowance for each event's metadata.
+type Retention struct {
+	Bytes     int    `json:"bytes"`
+	MaxBytes  int    `json:"maxBytes"`
+	MaxEvents int    `json:"maxEvents"`
+	Dropped   uint64 `json:"dropped"`
 }
 
 type attached struct {
@@ -80,20 +93,28 @@ type attached struct {
 // model. Encoding occurs on the notifying goroutine; use it for development,
 // with immutable state or NewWithClone. Close releases subscriptions and server.
 type Inspector struct {
-	mu      sync.Mutex
-	options Options
-	stores  map[string]*attached
-	events  []Event
-	next    uint64
-	closed  bool
-	token   string
-	server  *http.Server
-	done    chan struct{}
+	mu           sync.Mutex
+	options      Options
+	stores       map[string]*attached
+	events       []Event
+	historyBytes int
+	dropped      uint64
+	next         uint64
+	closed       bool
+	token        string
+	server       *http.Server
+	done         chan struct{}
 }
 
 func New(options Options) *Inspector {
 	if options.Limit < 1 {
 		options.Limit = 200
+	}
+	if options.MaxStateBytes < 1 {
+		options.MaxStateBytes = 1 << 20
+	}
+	if options.MaxHistoryBytes < 1 {
+		options.MaxHistoryBytes = 16 << 20
 	}
 	return &Inspector{options: options, stores: make(map[string]*attached), token: rand.Text()}
 }
@@ -193,18 +214,32 @@ func (i *Inspector) encode(id string, value any) (json.RawMessage, string) {
 	if !json.Valid(raw) {
 		return nil, "redactor returned invalid JSON"
 	}
+	if len(raw) > i.options.MaxStateBytes {
+		return nil, fmt.Sprintf("state exceeds inspection limit (%d bytes; maximum %d)", len(raw), i.options.MaxStateBytes)
+	}
 	return bytes.Clone(raw), ""
 }
 
 func (i *Inspector) appendLocked(event Event) {
 	i.next++
 	event.Sequence = i.next
-	if len(i.events) == i.options.Limit {
-		copy(i.events, i.events[1:])
-		i.events[len(i.events)-1] = event
-	} else {
-		i.events = append(i.events, event)
+	size := eventBytes(event)
+	if size > i.options.MaxHistoryBytes {
+		i.dropped++
+		return
 	}
+	for len(i.events) > 0 && (len(i.events) >= i.options.Limit || i.historyBytes+size > i.options.MaxHistoryBytes) {
+		i.historyBytes -= eventBytes(i.events[0])
+		i.events[0] = Event{} // Release evicted buffers, including sliced capacity.
+		i.events = i.events[1:]
+		i.dropped++
+	}
+	i.events = append(i.events, event)
+	i.historyBytes += size
+}
+
+func eventBytes(event Event) int {
+	return 256 + len(event.StoreID) + len(event.Kind) + len(event.Mutation) + len(event.Name) + len(event.Previous) + len(event.State) + len(event.Error)
 }
 
 func (i *Inspector) record(node *attached, event Event, stateErr string, update bool) {
@@ -226,6 +261,7 @@ func (i *Inspector) Snapshot() Snapshot {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	result := Snapshot{Format: 1, CapturedAt: time.Now().UTC(), Stores: make([]Store, 0, len(i.stores)), Events: make([]Event, len(i.events))}
+	result.Retention = Retention{Bytes: i.historyBytes, MaxBytes: i.options.MaxHistoryBytes, MaxEvents: i.options.Limit, Dropped: i.dropped}
 	for _, node := range i.stores {
 		view := node.view
 		view.State = bytes.Clone(view.State)
@@ -242,6 +278,7 @@ func (i *Inspector) Snapshot() Snapshot {
 func (i *Inspector) Clear() {
 	i.mu.Lock()
 	i.events = nil
+	i.historyBytes, i.dropped = 0, 0
 	i.mu.Unlock()
 }
 

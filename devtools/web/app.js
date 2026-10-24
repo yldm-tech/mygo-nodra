@@ -34,19 +34,99 @@
     return response.status === 204 ? null : response.json();
   }
 
-  function differences(before, after, path = '$', output = []) {
-    if (output.length >= 500 || JSON.stringify(before) === JSON.stringify(after)) return output;
-    if (before && after && typeof before === 'object' && typeof after === 'object' && Array.isArray(before) === Array.isArray(after)) {
-      for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
-        differences(before[key], after[key], `${path}[${JSON.stringify(key)}]`, output);
-      }
-    } else output.push({ path, before, after });
+  const codeLimits = { state: 1000, event: 1000 };
+  let currentState, stateFallback = '', stateContext = '', stateFormat = 'json';
+  const expandedPaths = new Set(['$']), childLimits = new Map();
+  function differences(before, after) {
+    const output = [], pending = [{ before, after, path: '$' }];
+    let visited = 0;
+    while (pending.length && output.length < 500 && visited++ < 20000) {
+      const pair = pending.pop(), { before, after, path } = pair;
+      if (before === after) continue;
+      if (before && after && typeof before === 'object' && typeof after === 'object' && Array.isArray(before) === Array.isArray(after)) {
+        const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])];
+        for (const key of keys.toReversed()) pending.push({
+          before: Object.hasOwn(before, key) ? before[key] : undefined,
+          after: Object.hasOwn(after, key) ? after[key] : undefined,
+          path: `${path}[${JSON.stringify(key)}]`
+        });
+      } else output.push(pair);
+    }
+    output.truncated = pending.length > 0;
     return output;
   }
 
+  function preview(value) {
+    if (value && typeof value === 'object') return Array.isArray(value) ? `Array(${value.length})` : `{ ${Object.keys(value).length} properties }`;
+    const raw = format(value);
+    return raw.length > 300 ? `${raw.slice(0, 300)}…` : raw;
+  }
+  function treeNode(label, value, path, depth = 0) {
+    const container = value !== null && typeof value === 'object';
+    const row = element(container ? 'details' : 'div', `tree-node${container ? ' tree-branch' : ' tree-leaf'}`);
+    const heading = element(container ? 'summary' : 'div', 'tree-heading');
+    const key = element('span', 'json-key', label), summary = element('span', `tree-preview ${container ? '' : `json-${typeof value}`}`, preview(value));
+    heading.append(key, element('span', 'tree-colon', ':'), summary); row.append(heading);
+    row.dataset.path = path;
+    if (!container) return row;
+    const children = element('div', 'tree-children'); row.append(children);
+    const populate = () => {
+      const keys = Object.keys(value), limit = childLimits.get(path) || 100;
+      children.replaceChildren();
+      if (depth >= 40) { children.append(element('p', 'tree-note', 'Further nesting is available in JSON or search.')); return; }
+      for (const key of keys.slice(0, limit)) children.append(treeNode(Array.isArray(value) ? key : JSON.stringify(key), value[key], `${path}[${JSON.stringify(key)}]`, depth + 1));
+      if (keys.length > limit) {
+        const more = element('button', 'tree-more', `Show next ${Math.min(100, keys.length - limit)} · ${keys.length - limit} remaining`);
+        more.onclick = () => { childLimits.set(path, limit + 100); populate(); };
+        children.append(more);
+      }
+    };
+    row.open = expandedPaths.has(path);
+    if (row.open) populate();
+    row.ontoggle = () => {
+      if (!row.isConnected) return;
+      if (row.open) { expandedPaths.add(path); if (!children.childNodes.length) populate(); }
+      else expandedPaths.delete(path);
+    };
+    return row;
+  }
+  function renderState() {
+    const query = byId('state-search').value.trim().toLowerCase();
+    const tree = stateFormat === 'tree' || Boolean(query);
+    byId('state').hidden = tree;
+    byId('state-tree').hidden = !tree;
+    byId('state-more').hidden = true;
+    byId('collapse-state').hidden = !tree || Boolean(query);
+    byId('state-search-status').hidden = !query;
+    byId('view-tree').setAttribute('aria-pressed', String(tree));
+    byId('view-json').setAttribute('aria-pressed', String(!tree));
+    if (!tree) { renderCode(byId('state'), currentState, stateFallback); return; }
+    const host = byId('state-tree');
+    if (currentState === undefined) { host.textContent = stateFallback; return; }
+    if (!query) { host.replaceChildren(treeNode('$', currentState, '$')); return; }
+    const pending = [{ value: currentState, path: '$' }], matches = [];
+    let visited = 0;
+    while (pending.length && matches.length < 200 && visited++ < 50000) {
+      const { value, path } = pending.pop();
+      const container = value !== null && typeof value === 'object';
+      if (path.toLowerCase().includes(query) || (!container && format(value).toLowerCase().includes(query))) matches.push({ path, value });
+      if (container) for (const key of Object.keys(value).toReversed()) pending.push({ value: value[key], path: `${path}[${JSON.stringify(key)}]` });
+    }
+    host.replaceChildren(...matches.map(({ path, value }) => {
+      const hit = element('div', 'search-hit');
+      hit.append(element('span', 'search-path', path), element('code', '', preview(value))); return hit;
+    }));
+    if (!matches.length) host.append(empty('search', 'No state matches', 'Try a different key or value.'));
+    byId('state-search-status').textContent = `${matches.length} matches${pending.length ? ' · Search limit reached; refine your query.' : ''}`;
+  }
+
   function renderCode(node, value, fallback) {
-    if (value === undefined) { node.textContent = fallback; return; }
-    node.replaceChildren(...format(value).split('\n').map((line, index) => {
+    if (value === undefined) { node.textContent = fallback; const more = byId(`${node.id}-more`); if (more) more.hidden = true; return; }
+    const lines = format(value).split('\n'), limit = codeLimits[node.id] || 1000;
+    const more = byId(`${node.id}-more`);
+    if (more) { more.hidden = lines.length <= limit; more.textContent = `Show next ${Math.min(1000, lines.length - limit)} lines · ${lines.length} total`; }
+    node.replaceChildren(...lines.slice(0, limit).map((sourceLine, index) => {
+      const line = sourceLine.length > 2000 ? `${sourceLine.slice(0, 2000)}… [line shortened; Copy JSON includes the full value]` : sourceLine;
       const row = element('span', 'code-line');
       const number = element('span', 'line-number', index + 1); number.setAttribute('aria-hidden', 'true');
       const text = element('span', 'code-text');
@@ -70,9 +150,9 @@
     const available = selected?.previous !== undefined && selected?.state !== undefined;
     byId('change-count').hidden = !available;
     byId('change-count').textContent = changes.length;
-    byId('diff-summary').textContent = available ? `${changes.length} ${changes.length === 1 ? 'property' : 'properties'} changed in this snapshot.` : 'Compare a mutation’s previous and next state.';
+    byId('diff-summary').textContent = available ? `${changes.truncated ? 'Comparison limited · showing ' : ''}${changes.length} changed ${changes.length === 1 ? 'property' : 'properties'}${changes.truncated ? '. More changes may exist.' : ' in this snapshot.'}` : 'Compare a mutation’s previous and next state.';
     if (!available || changes.length === 0) {
-      byId('changes').replaceChildren(empty('diff', available ? 'No state changes' : 'Select a mutation', available ? 'The previous and next state are identical.' : 'Choose an event in the timeline to see what changed.'));
+      byId('changes').replaceChildren(empty('diff', available ? changes.truncated ? 'Comparison limit reached' : 'No state changes' : 'Select a mutation', available ? changes.truncated ? 'No differences found within the comparison limit. More changes may exist.' : 'The previous and next state are identical.' : 'Choose an event in the timeline to see what changed.'));
       return;
     }
     byId('changes').replaceChildren(...changes.map(change => {
@@ -127,6 +207,8 @@
     });
     byId('events').replaceChildren(...rows);
     if (!rows.length) byId('events').append(empty('search', 'No events found', filter || kind !== 'all' ? 'Try a different filter.' : 'New state changes will appear here.'));
+    const retention = data.retention;
+    byId('retention-status').textContent = retention ? `${(retention.bytes / 1048576).toFixed(1)} / ${(retention.maxBytes / 1048576).toFixed(0)} MB${retention.dropped ? ` · ${retention.dropped} evicted` : ''}` : '';
     byId('session-events').textContent = data.events.length;
     byId('session-errors').textContent = data.events.filter(event => event.error).length;
     byId('timeline-status').textContent = `${allEvents.length} captured ${allEvents.length === 1 ? 'event' : 'events'}`;
@@ -138,7 +220,13 @@
     byId('action-error').hidden = !selected?.error;
     byId('action-error-text').textContent = selected?.error ?? '';
     const state = selected?.state !== undefined ? selected.state : store?.state;
-    renderCode(byId('state'), state, store?.error || 'No state available.');
+    const context = `${store?.id}:${store?.generation}:${sequence}`;
+    if (context !== stateContext) {
+      stateContext = context; expandedPaths.clear(); expandedPaths.add('$'); childLimits.clear();
+      codeLimits.state = 1000; byId('state-search').value = '';
+    }
+    currentState = state; stateFallback = store?.error || 'No state available.';
+    renderState();
     renderCode(byId('event'), selected, 'Select an event to inspect its metadata.');
     const changes = selected?.previous !== undefined && selected?.state !== undefined ? differences(selected.previous, selected.state) : [];
     renderDiff(changes, selected);
@@ -203,6 +291,15 @@
     try { localStorage.setItem('nodra.devtools.theme', theme); } catch { /* Storage is optional. */ }
   };
   byId('refresh').onclick = refresh;
+  byId('state-search').oninput = renderState;
+  byId('view-tree').onclick = () => { stateFormat = 'tree'; renderState(); };
+  byId('view-json').onclick = () => { stateFormat = 'json'; byId('state-search').value = ''; renderState(); };
+  byId('collapse-state').onclick = () => { expandedPaths.clear(); renderState(); };
+  byId('state-more').onclick = () => { codeLimits.state += 1000; renderState(); };
+  byId('event-more').onclick = () => {
+    codeLimits.event += 1000;
+    renderCode(byId('event'), data.events.find(event => event.sequence === sequence && event.storeId === storeId), 'Select an event.');
+  };
   byId('json-input').oninput = () => { editorDirty = true; };
   byId('filter').oninput = render;
   for (const button of document.querySelectorAll('[data-kind]')) button.onclick = () => {
