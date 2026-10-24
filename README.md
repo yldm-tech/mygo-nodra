@@ -21,7 +21,32 @@ Redraw a native MyGo window whenever its store publishes:
 stop := nodra.Invalidate(store, window)
 ```
 
-Call `stop` when the window closes; `go run ./examples/mygo` shows the whole app.
+The subscription stops automatically when the window closes. Call `stop()` to detach it earlier; repeated calls are safe. A hidden window stays subscribed so it can be shown again. Each window has its own subscription, and closing one does not close the shared Store.
+
+For a window that only displays part of the state, select that part so unrelated updates do not request a frame:
+
+```go
+stop := nodra.InvalidateSelector(store, window, func(s AppState) int {
+    return s.Count
+})
+```
+
+`InvalidateSelectorWith` accepts `SelectorOptions[V]`, including `Equals` for collections and `Immediate` to request a frame on attachment. It uses the same equality and ownership rules as `SubscribeSelectorWith`. Select every value the view displays; multiple windows can select different values from the same Store. This filters redraw requests, not individual UI elements, and does not track field reads automatically.
+
+Keep local UI state, such as a draft or an open popover, in the view's Go owner or MyGo's `ui.Local`. For a widget that edits shared business state, bind a local snapshot field and commit only the changed field:
+
+```go
+enabled := store.Get().Enabled
+if ui.Checkbox(c, &enabled, "Enable sync").Changed() {
+    if err := store.Update(func(s *AppState) { s.Enabled = enabled }); err != nil {
+        log.Print(err)
+    }
+}
+```
+
+Replacing the whole snapshot with `Set` here could overwrite another field changed by a background task. Subscribers and selectors run on writer goroutines, so update other UI-owned fields through `window.Update`; the invalidation helpers only request a goroutine-safe redraw. Stopping does not wait for an already running callback, and a selector panic during attachment releases the window listener before propagating.
+
+`go run ./examples/mygo` demonstrates a counter and a preferences window with independent selectors, field-level widget commits, and a background action.
 
 ## Core usage
 
@@ -61,7 +86,7 @@ tasks.Update(func(value *[]Task) {
 - `AutoSaveWithErrors` for observable persistence failures
 - `AutoSaveAsync` for debounced, coalesced writes with `Flush`, `Close` and an error stream
 - Context-bound, bounded `Watch` streams that close with the store
-- `Invalidate` to redraw a MyGo window when a store publishes
+- `Invalidate` and `InvalidateSelector` for window-bound redraw subscriptions with automatic cleanup
 - Optional DevTools with a local browser inspector, mutation/action timeline,
   lazy state trees, key/value search, bounded state diffs, snapshot export, JSON editing and opt-in state restoration
 
