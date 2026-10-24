@@ -16,15 +16,12 @@ type SelectorOptions[V any] struct {
 	Equals    func(previous, next V) bool
 }
 
-// SubscribeSelectorWith calls fn with current and previous selected values.
-// It catches up after registration and ignores obsolete computations. Callbacks
-// run on writer goroutines and may overlap, as with Store.Subscribe.
-func SubscribeSelectorWith[T any, V any](source Reader[T], selector func(T) V, fn func(current, previous V), options SelectorOptions[V]) func() {
-	store := sourceStore(source)
-	if store == nil || selector == nil || fn == nil {
+// SubscribeSelectorWith calls fn with current and previous selected values. It catches up after registration and ignores obsolete computations. Callbacks run on writer goroutines and may overlap, as with Store.Subscribe.
+func SubscribeSelectorWith[T any, V any](source Observable[T], selector func(T) V, fn func(current, previous V), options SelectorOptions[V]) func() {
+	if !validObservable(source) || selector == nil || fn == nil {
 		return func() {}
 	}
-	return subscribeSelection(store.Snapshot, store.Subscribe, selector, fn, options)
+	return subscribeSelection(source.Snapshot, source.SubscribeSnapshot, selector, fn, options)
 }
 
 func subscribeSelection[T, V any](snapshot func() Snapshot[T], subscribe func(func(Snapshot[T])) func(), selector func(T) V, fn func(current, previous V), options SelectorOptions[V]) func() {
@@ -98,27 +95,26 @@ func selectorEqual[V any](previous, next V) bool {
 	return reflect.DeepEqual(previous, next)
 }
 
-// Derived is a memoized getter derived from a store. It recomputes when the
-// source publishes and only notifies listeners when the selected value changes.
+// Derived is a memoized getter derived from an observable value. It recomputes when the source publishes and only notifies listeners when the selected value changes. Reference values and listener arguments remain read-only.
 type Derived[T any, V any] struct {
-	source    *Store[T]
-	selector  func(T) V
-	equals    func(V, V) bool
-	mu        sync.RWMutex
-	value     V
-	version   uint64
-	listeners map[uint64]func(V)
-	nextID    uint64
-	stop      func()
-	closed    bool
+	source            *Store[T]
+	selector          func(T) V
+	equals            func(V, V) bool
+	mu                sync.RWMutex
+	value             V
+	version           uint64
+	listeners         map[uint64]func(V)
+	snapshotListeners map[uint64]func(Snapshot[V])
+	nextID            uint64
+	stop              func()
+	closed            bool
 }
 
-func Derive[T any, V any](source Reader[T], selector func(T) V, equals func(V, V) bool) *Derived[T, V] {
-	store := sourceStore(source)
-	if store == nil {
+func Derive[T any, V any](source Observable[T], selector func(T) V, equals func(V, V) bool) *Derived[T, V] {
+	if !validObservable(source) {
 		return &Derived[T, V]{closed: true}
 	}
-	return derive(store, store.Snapshot, store.Subscribe, selector, equals)
+	return derive(nil, source.Snapshot, source.SubscribeSnapshot, selector, equals)
 }
 
 // DeriveProjection memoizes an owned projection without whole-source clones. It follows SubscribeProjection's ownership contract; returned reference values and listener arguments are read-only.
@@ -176,9 +172,16 @@ func derive[T any, V any](store *Store[T], snapshot func() Snapshot[T], subscrib
 			for _, fn := range d.listeners {
 				listeners = append(listeners, fn)
 			}
+			snapshotListeners := make([]func(Snapshot[V]), 0, len(d.snapshotListeners))
+			for _, fn := range d.snapshotListeners {
+				snapshotListeners = append(snapshotListeners, fn)
+			}
 			d.mu.Unlock()
 			for _, fn := range listeners {
 				fn(next)
+			}
+			for _, fn := range snapshotListeners {
+				fn(Snapshot[V]{Value: next, Version: snapshot.Version})
 			}
 			return
 		}
@@ -225,6 +228,7 @@ func (d *Derived[T, V]) Close() error {
 		d.stop()
 	}
 	d.listeners = nil
+	d.snapshotListeners = nil
 	return nil
 }
 

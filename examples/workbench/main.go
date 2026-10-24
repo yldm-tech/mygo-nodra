@@ -65,7 +65,7 @@ func newWorkbench(root, path string) (*workbench, error) {
 		}
 	}()
 	var err error
-	app.search, err = nodra.NewAsyncAction(app.results, "search files", searchFiles, func(s *searchResult, result searchResult) error { *s = result; return nil })
+	app.search, err = nodra.NewAsyncActionWithOptions(app.results, "search files", searchFiles, func(s *searchResult, result searchResult) error { *s = result; return nil }, nodra.ActionOptions[searchInput]{Debounce: 150 * time.Millisecond, MaxConcurrent: 2, QueueLimit: 32})
 	if err != nil {
 		return nil, err
 	}

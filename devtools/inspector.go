@@ -27,11 +27,10 @@ var (
 	ErrInvalid     = errors.New("nodra devtools: invalid store or state")
 )
 
-// Options configures a development inspector. Restore is opt-in. Redact runs
-// before state enters the inspector; it must be concurrency-safe and return
-// valid JSON. Redacted inspectors are always read-only to avoid restoring masked
-// data. The default event limit is 200; state and event histories stay in memory.
+// Options configures a development inspector. Restore is opt-in. Redact runs before state enters the inspector; it must be concurrency-safe and return valid JSON. Redacted inspectors are always read-only to avoid restoring masked data. The default event limit is 200; state and event histories stay in memory.
 type Options struct {
+	// TaskProgressInterval coalesces intermediate running progress per task with a trailing update. Zero captures every trace. Lifecycle changes and errors are immediate.
+	TaskProgressInterval time.Duration
 	// SampleInterval skips mutation encoding within this interval per store. Zero captures every mutation; action completions remain observable.
 	SampleInterval time.Duration
 	Limit          int
@@ -44,14 +43,15 @@ type Options struct {
 }
 
 type Store struct {
-	Closed       bool            `json:"closed,omitempty"`
-	TasksDropped uint64          `json:"tasksDropped,omitempty"`
-	ID           string          `json:"id"`
-	Version      uint64          `json:"version"`
-	Generation   uint64          `json:"generation"`
-	State        json.RawMessage `json:"state,omitempty"`
-	Error        string          `json:"error,omitempty"`
-	Restorable   bool            `json:"restorable"`
+	TaskProgressCoalesced uint64          `json:"taskProgressCoalesced,omitempty"`
+	Closed                bool            `json:"closed,omitempty"`
+	TasksDropped          uint64          `json:"tasksDropped,omitempty"`
+	ID                    string          `json:"id"`
+	Version               uint64          `json:"version"`
+	Generation            uint64          `json:"generation"`
+	State                 json.RawMessage `json:"state,omitempty"`
+	Error                 string          `json:"error,omitempty"`
+	Restorable            bool            `json:"restorable"`
 }
 
 // Event sequences describe capture order, not an ordering guarantee between
@@ -100,6 +100,7 @@ type Retention struct {
 }
 
 type attached struct {
+	progress    map[uint64]*taskProgress
 	tasks       []Event
 	taskBytes   int
 	taskFloor   uint64
@@ -133,6 +134,9 @@ type Inspector struct {
 }
 
 func New(options Options) *Inspector {
+	if options.TaskProgressInterval < 0 {
+		options.TaskProgressInterval = 0
+	}
 	if options.SampleInterval < 0 {
 		options.SampleInterval = 0
 	}
@@ -253,6 +257,7 @@ func Attach[T any](i *Inspector, id string, source nodra.Reader[T]) (func(), err
 			i.mu.Lock()
 			if i.stores[id] == node {
 				delete(i.stores, id)
+				i.cancelProgressLocked(node)
 				i.revision++
 			}
 			i.mu.Unlock()
@@ -358,6 +363,8 @@ func (i *Inspector) Clear() {
 	i.mu.Lock()
 	i.events = nil
 	for _, node := range i.stores {
+		i.cancelProgressLocked(node)
+		node.view.TaskProgressCoalesced = 0
 		node.tasks = nil
 		node.taskBytes = 0
 		node.taskFloor = 0
@@ -442,6 +449,9 @@ func (i *Inspector) Close() error {
 	}
 	i.closed = true
 	nodes, server, done := i.stores, i.server, i.done
+	for _, node := range nodes {
+		i.cancelProgressLocked(node)
+	}
 	i.stores = make(map[string]*attached)
 	i.mu.Unlock()
 	for _, node := range nodes {

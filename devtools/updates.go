@@ -46,6 +46,11 @@ func (i *Inspector) SetCapture(paused bool, interval time.Duration) error {
 		return ErrClosed
 	}
 	refresh := !paused && (i.paused || (i.options.SampleInterval > 0 && interval == 0))
+	if paused {
+		for _, node := range i.stores {
+			i.cancelProgressLocked(node)
+		}
+	}
 	i.paused = paused
 	i.options.SampleInterval = interval
 	i.revision++

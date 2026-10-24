@@ -1,0 +1,53 @@
+name: performance
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      base_ref:
+        description: Baseline Git ref (v0.6.0 or newer)
+        default: main
+        type: string
+permissions:
+  contents: read
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: candidate
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.base.sha || inputs.base_ref || 'main' }}
+          path: baseline
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: candidate/go.mod
+          cache-dependency-path: candidate/go.sum
+      - name: Install comparison tool
+        run: GOBIN="$RUNNER_TEMP/perf-tools" go install golang.org/x/perf/cmd/benchstat@v0.0.0-20261009192801-be2c69fb417e
+      - name: Collect interleaved samples
+        working-directory: candidate
+        env:
+          BENCHSTAT: ${{ runner.temp }}/perf-tools/benchstat
+        run: bash scripts/benchmark.sh "$GITHUB_WORKSPACE/baseline" "$RUNNER_TEMP/performance"
+      - name: Performance summary
+        shell: bash
+        run: |
+          {
+            echo '## Same-runner benchmark comparison'
+            echo 'Timing differences are review evidence; hosted-runner noise is not a fixed performance threshold. See the raw samples and environment in the artifact.'
+            echo '```text'
+            cat "$RUNNER_TEMP/performance/comparison.txt"
+            cat "$RUNNER_TEMP/performance/features-summary.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: performance-${{ github.sha }}
+          path: ${{ runner.temp }}/performance
+          retention-days: 14

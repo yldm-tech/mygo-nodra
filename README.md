@@ -48,6 +48,43 @@ Replacing the whole snapshot with `Set` here could overwrite another field chang
 
 `go run ./examples/mygo` demonstrates a counter and a preferences window with independent selectors, field-level widget commits, and a background action.
 
+## Composing derived state
+
+`Observable[T]` is the small versioned value interface shared by Stores, read-only views and derived values. `Derive`, selectors and MyGo invalidation accept it; `Derived.Subscribe` keeps its existing value callback, while `SubscribeSnapshot` exposes versions for composition.
+
+These helpers now accept Observable instead of Reader. Ordinary calls remain valid; explicitly declared helper function types must update their parameter type. Reader retains the richer Store observation surface, while borrowed projections and DevTools attachment continue to require Reader.
+
+```go
+canEdit := nodra.Combine(user.ReadOnly(), permissions.ReadOnly(),
+    func(u User, p Permissions) bool { return u.Active && p.Edit },
+    func(a, b bool) bool { return a == b })
+label := nodra.Derive(canEdit, func(allowed bool) string {
+    if allowed { return "Edit" }
+    return "View only"
+}, func(a, b string) bool { return a == b })
+stop := nodra.Invalidate(label, window)
+// At owner shutdown: stop(), then label.Close(), then canEdit.Close().
+```
+
+Nest Combine calls for more inputs. Each source version advances independently: combinations converge to the latest observed inputs but are not cross-Store transactions. A diamond graph may emit an intermediate combination before both branches catch up. Keep values that require atomic updates in one Store. Constructors catch registration gaps; obsolete computations do not overwrite newer accepted results. Projectors and comparators must be pure and concurrency-safe, and derived reference values remain read-only. `DeriveProjection` can start a derived chain without full-source subscription clones. Closing a derived value detaches its inputs and freezes its last value; downstream owners still close their own derived values.
+
+## Immediate field editing
+
+`BindField` creates a small immediate binding; its `Edit` callback renders against a local value outside Store locks and commits only when the control reports a change:
+
+```go
+enabled, err := nodra.BindField(store,
+    func(s AppState) bool { return s.Enabled },
+    func(s *AppState, value bool) error { s.Enabled = value; return nil })
+// Handle construction errors before rendering.
+err = enabled.Edit(func(value *bool) bool {
+    return ui.Checkbox(c, value, "Enable sync").Changed()
+})
+// Surface err in the view or the owner's error handler.
+```
+
+The setter runs on the latest state candidate, so unrelated background changes survive. A returned validation error rolls back the write according to the Store's clone policy. Use `NewWithClone` for mutable reference fields; `Get` takes a normal isolated source snapshot. Forms that need Save/Cancel should keep UI-local drafts as in the workbench, rather than committing every edit. The native counter preferences example exercises this binding with MyGo controls.
+
 ## Read-only state and lifecycle ownership
 
 Pass `store.ReadOnly()` to UI code that should observe shared state without changing or closing it. The concrete wrapper hides its backing Store; returning an interface whose dynamic value is the writable Store would not provide that boundary. `Reader[T]` is the observation surface accepted by selectors, projections, derived getters, MyGo invalidation and DevTools attachment. A read-only DevTools source remains non-restorable even when inspector restoration is enabled. Read-only values retain the source's cloning/immutability policy; referenced data is not automatically frozen.
@@ -111,7 +148,9 @@ action, err := nodra.NewAsyncActionWithOptions(store, "load item", work, apply,
     })
 ```
 
-LatestWins replaces work only for the same key; different keys are independent. Use `QueueAll` for work that must retain every accepted input. QueueAll defaults to one worker for FIFO starts/commits; with more workers, starts are FIFO and commits follow completion order. LatestWins with zero MaxConcurrent preserves unbounded legacy behavior. Bounded actions default to 64 pending entries, and a full queue returns `ErrQueueFull` without canceling existing work. A superseded queued entry can be replaced even when that queue is full. Canceled work that has not returned still occupies its concurrency slot. Run accepts input without waiting for a work slot; canceled queued tasks finish without executing work.
+LatestWins replaces work only for the same key; different keys are independent. Use `QueueAll` for work that must retain every accepted input. QueueAll defaults to one worker for FIFO starts/commits; with more workers, starts are FIFO and commits follow completion order. LatestWins with zero MaxConcurrent preserves unbounded legacy behavior. Bounded or debounced actions default to 64 pending entries, and a full queue returns `ErrQueueFull` without canceling existing work. A superseded queued entry can be replaced even when that queue is full. Canceled work that has not returned still occupies its concurrency slot. Run accepts input without waiting for a work slot; canceled queued tasks finish without executing work.
+
+Set `ActionOptions.Debounce` to delay `LatestWins` work until a quiet interval after acceptance for its key. Replacing an input cancels its timer and reports `superseded` without executing work. Different keys have independent deadlines. Waiting for debounce does not occupy a worker slot, and eligible keys can start while another key is still waiting. Queue limits include live debounced inputs; cancellation and Close drain waiting tasks. A positive Debounce with QueueAll returns `ErrInvalidAction`, because QueueAll retains every input. Zero preserves existing immediate scheduling. The workbench search uses a 150 ms debounce.
 
 `Task.Status()` exposes that task's key, queued/running/terminal phase, progress and diagnostic error. The status Store closes after terminal status. The action-level Status describes the most recently accepted run, which is not a count of all active work. Use `ActiveTasks()` or `TaskSnapshot()` on the source for current work. Do not wait for another queued task synchronously from work, hooks or subscribers of the same bounded action; that can exhaust its own work slots. Progress may be reported concurrently during work; stop reporting when work returns.
 
@@ -145,6 +184,22 @@ end()
 ```
 
 `Equals` ignores changes outside the edited fields. `Restore` preserves their current values during undo/redo; filtering alone does not preserve fields when restoring whole snapshots. These callbacks must be pure, must not mutate arguments, and must not reenter the Store or History because they can run under locks. Nested groups merge into one undo step; repeated end calls are safe. Concurrent writers join an open group. Travel is rejected with `ErrHistoryGroup` until every group ends. An empty/filtered group adds no step. `Track(store, limit)` retains its existing behavior.
+
+### History payload budgets and availability
+
+`HistoryOptions.MaxBytes` limits the combined estimated payloads in undo and redo, in addition to the undo entry limit. Supply `Size func(T) int64` with an application-specific estimate; for a text document this can be the text length plus known owned payloads. Zero disables sizing and preserves the existing count-only behavior. Negative budgets, a positive budget without Size, or negative estimates panic with `ErrInvalidHistory` before accepting that invalid estimate. Size follows the existing pure/non-reentrant callback rules.
+
+```go
+history := nodra.TrackWith(document, nodra.HistoryOptions[Document]{
+    Limit: 100,
+    MaxBytes: 8 << 20,
+    Size: func(d Document) int64 { return int64(len(d.Text)) },
+})
+stop := nodra.Invalidate(history.Status(), window)
+canUndo := history.Status().Get().CanUndo
+```
+
+Oldest undo entries are evicted first, then oldest redo entries if necessary; an individually oversized entry is discarded. The estimate excludes the current history value, Store state, container overhead and shared allocations, so it is not a process heap limit. `History.Status()` is a read-only observable with counts, Bytes, Dropped, grouping and actionable CanUndo/CanRedo flags. Group start/end notify even without a source mutation. Status callbacks run outside both history and source locks, can reenter reads, and may overlap like Store callbacks. Close publishes Closed, releases retained entries, then closes the status source. The legacy CanUndo/CanRedo methods continue to report stack presence even during a group; the status flags additionally account for grouping.
 
 ## Desktop workflow example
 
@@ -356,10 +411,12 @@ CI runs race tests and vet on Linux, macOS and Windows. It also runs golangci-li
 ```sh
 go test -run '^$' -fuzz=FuzzVersionedJSONDecode -fuzztime=30s -parallel=2 .
 go test -run '^$' -fuzz=FuzzHistoryStateMachine -fuzztime=30s -parallel=2 .
-go test -run '^$' -bench=. -benchmem -count=5 .
+go test -run '^$' -bench=. -benchmem -count=10 . ./devtools
 ```
 
-Fuzzing checks accepted versioned/legacy JSON round trips and compares bounded undo/redo/batch operations with an independent state-machine model. Benchmarks report store updates with 0/1/100 listeners, full cloning of a 1,000-entry map, and selection of 1,000-element slices with default versus custom equality. Run repeated measurements on the same Go version, hardware and load before comparing changes. The CI `-benchtime=1x` run only checks execution, with no performance thresholds.
+Fuzzing checks accepted versioned/legacy JSON round trips and compares bounded undo/redo/batch operations with an independent state-machine model. Benchmarks report store updates with 0/1/100 listeners, full cloning of a 1,000-entry map, and selection of 1,000-element slices with default versus custom equality. Run repeated measurements on the same Go version, hardware and load before comparing changes. The CI `-benchtime=1x` run only checks execution. A separate performance workflow checks out the PR base and candidate on the same runner and runs identical compatibility workloads in alternating order, 10 samples each, with one toolchain and two CPUs. It uploads raw samples, environment details and benchstat comparisons. Candidate-only benchmarks measure derived pipelines, combinations, scheduling and inspector off/every/coalesced progress (128 reports per task). Timing changes are review evidence rather than a fixed hosted-runner pass/fail threshold.
+
+For a local comparison, export the baseline sources (v0.6.0 or newer) to an independent directory, install the pinned `golang.org/x/perf/cmd/benchstat@v0.0.0-20261009192801-be2c69fb417e` tool outside this module, then run `bash scripts/benchmark.sh /path/to/baseline /path/to/results`. The script copies only the compatibility workload into that baseline directory; do not point it at a checkout with work you need to preserve. The baseline samples use the candidate's exact same workload. Keep raw results rather than comparing numbers measured on different machines or under different load.
 
 An illustrative local run on Apple M4 Pro, darwin/arm64 measured approximately 73 ns per update without listeners, 101 ns with one listener and 1.51 µs with 100 listeners; cloning the map cost 6.81 µs. Slice selection including the projection clone took 6.57 µs with default equality and 1.13 µs with `slices.Equal`. These are machine-specific measurements, not API guarantees.
 
