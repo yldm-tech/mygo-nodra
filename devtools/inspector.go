@@ -265,12 +265,16 @@ func (i *Inspector) Restore(id string, sequence uint64) error {
 	if state == nil {
 		return ErrNotFound
 	}
-	return i.Apply(id, state)
+	return i.apply(id, state, node)
 }
 
 // Apply strictly decodes one store's JSON before Set. It is disabled unless
 // AllowRestore is true and no redactor is configured. No actions are replayed.
 func (i *Inspector) Apply(id string, state json.RawMessage) error {
+	return i.apply(id, state, nil)
+}
+
+func (i *Inspector) apply(id string, state json.RawMessage, expected *attached) error {
 	i.mu.Lock()
 	if i.closed {
 		i.mu.Unlock()
@@ -281,7 +285,7 @@ func (i *Inspector) Apply(id string, state json.RawMessage) error {
 		return ErrReadOnly
 	}
 	node := i.stores[id]
-	if node == nil {
+	if node == nil || (expected != nil && node != expected) {
 		i.mu.Unlock()
 		return ErrNotFound
 	}

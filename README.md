@@ -71,7 +71,8 @@ tasks.Update(func(value *[]Task) {
 - By default, values are not deep copied. Copy reference types before changing them, or use `NewWithClone` with a complete clone function. Cloned stores isolate constructor and `Set` inputs, update candidates, reads, each subscriber, mutation metadata and reset state.
 - Selectors and derived getters catch up with changes during initialization and ignore computations from older versions once a newer version has been processed. Callbacks still run on writer goroutines and may run concurrently.
 - Concurrent `Save` calls on one `Persistence` instance are serialized from state capture through storage write, so a delayed save cannot overwrite a newer save. Keep one persistence instance per destination; `Load` is intended for startup before concurrent writes.
-- Watch channels are best effort and bounded; slow consumers may skip intermediate snapshots.
+- Subscriptions discard obsolete snapshots once they have accepted a newer source version. Callbacks that already started may still overlap or finish out of order. Watch channels are bounded and retain the newest accepted version; slow consumers may skip intermediate snapshots.
+- History keeps source versions monotonic and commits stack changes with successful undo/redo writes. Failed writes leave stacks intact. Travel inside an open batch returns `ErrHistoryBatch`; finish the batch before undoing or redoing.
 
 ## Isolated mutable state
 
