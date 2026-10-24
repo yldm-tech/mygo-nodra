@@ -23,12 +23,16 @@ func SubscribeSelectorWith[T any, V any](store *Store[T], selector func(T) V, fn
 	if store == nil || selector == nil || fn == nil {
 		return func() {}
 	}
+	return subscribeSelection(store.Snapshot, store.Subscribe, selector, fn, options)
+}
+
+func subscribeSelection[T, V any](snapshot func() Snapshot[T], subscribe func(func(Snapshot[T])) func(), selector func(T) V, fn func(current, previous V), options SelectorOptions[V]) func() {
 	compare := options.Equals
 	if compare == nil {
 		compare = selectorEqual[V]
 	}
 	var mu sync.Mutex
-	initial := store.Snapshot()
+	initial := snapshot()
 	previous := selector(initial.Value)
 	version := initial.Version
 	if options.Immediate {
@@ -70,7 +74,7 @@ func SubscribeSelectorWith[T any, V any](store *Store[T], selector func(T) V, fn
 			return
 		}
 	}
-	stop := store.Subscribe(changed)
+	stop := subscribe(changed)
 	initialized := false
 	defer func() {
 		if !initialized {
@@ -79,7 +83,7 @@ func SubscribeSelectorWith[T any, V any](store *Store[T], selector func(T) V, fn
 	}()
 	// Catch changes between reading the initial value and registering. The
 	// version check also avoids recomputing when a callback already caught up.
-	changed(store.Snapshot())
+	changed(snapshot())
 	initialized = true
 	return stop
 }
@@ -228,6 +232,7 @@ type Mutation[T any] struct {
 
 // ActionEvent describes one completed action.
 type ActionEvent struct {
+	ID       uint64
 	StoreID  string
 	Name     string
 	Started  time.Time
@@ -281,23 +286,34 @@ func (s *Store[T]) Do(name string, fn func(*T) error) error {
 	if fn == nil {
 		return errors.New("nodra: nil action")
 	}
-	started := time.Now()
-	event := ActionEvent{StoreID: s.ID(), Name: name, Started: started}
-	s.mu.RLock()
-	hooks := make([]ActionHooks, 0, len(s.actionHooks))
-	for _, hook := range s.actionHooks {
-		hooks = append(hooks, hook)
-	}
-	s.mu.RUnlock()
+	event, hooks := s.newAction(name)
 	for _, hook := range hooks {
 		if hook.Before != nil {
 			hook.Before(event)
 		}
 	}
 	err := s.updateNamed(name, MutationAction, fn)
+	s.finishAction(event, hooks, err)
+	return err
+}
+
+func (s *Store[T]) newAction(name string) (ActionEvent, []ActionHooks) {
+	started := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nextAction++
+	event := ActionEvent{ID: s.nextAction, StoreID: s.id, Name: name, Started: started}
+	hooks := make([]ActionHooks, 0, len(s.actionHooks))
+	for _, hook := range s.actionHooks {
+		hooks = append(hooks, hook)
+	}
+	return event, hooks
+}
+
+func (s *Store[T]) finishAction(event ActionEvent, hooks []ActionHooks, err error) {
 	finished := time.Now()
 	event.Finished = finished
-	event.Duration = finished.Sub(started)
+	event.Duration = finished.Sub(event.Started)
 	event.Err = err
 	s.mu.RLock()
 	listeners := make([]func(ActionEvent), 0, len(s.actionListeners))
@@ -317,7 +333,6 @@ func (s *Store[T]) Do(name string, fn func(*T) error) error {
 			hook.Error(event)
 		}
 	}
-	return err
 }
 
 // Action returns a reusable named action function, matching Pinia action
