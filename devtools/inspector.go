@@ -44,33 +44,43 @@ type Options struct {
 }
 
 type Store struct {
-	ID         string          `json:"id"`
-	Version    uint64          `json:"version"`
-	Generation uint64          `json:"generation"`
-	State      json.RawMessage `json:"state,omitempty"`
-	Error      string          `json:"error,omitempty"`
-	Restorable bool            `json:"restorable"`
+	Closed       bool            `json:"closed,omitempty"`
+	TasksDropped uint64          `json:"tasksDropped,omitempty"`
+	ID           string          `json:"id"`
+	Version      uint64          `json:"version"`
+	Generation   uint64          `json:"generation"`
+	State        json.RawMessage `json:"state,omitempty"`
+	Error        string          `json:"error,omitempty"`
+	Restorable   bool            `json:"restorable"`
 }
 
 // Event sequences describe capture order, not an ordering guarantee between
 // concurrent writers. Version and At preserve the source mutation's metadata.
 type Event struct {
-	ActionID   uint64             `json:"actionId,omitempty"`
-	Sequence   uint64             `json:"sequence"`
-	StoreID    string             `json:"storeId"`
-	Kind       string             `json:"kind"`
-	Mutation   nodra.MutationType `json:"mutation,omitempty"`
-	Name       string             `json:"name,omitempty"`
-	Version    uint64             `json:"version"`
-	Generation uint64             `json:"generation"`
-	At         time.Time          `json:"at"`
-	Duration   time.Duration      `json:"duration,omitempty"`
-	Previous   json.RawMessage    `json:"previous,omitempty"`
-	State      json.RawMessage    `json:"state,omitempty"`
-	Error      string             `json:"error,omitempty"`
+	RunID         uint64             `json:"runId,omitempty"`
+	Key           string             `json:"key,omitempty"`
+	Phase         nodra.TaskPhase    `json:"phase,omitempty"`
+	Progress      float64            `json:"progress,omitempty"`
+	TaskVersion   uint64             `json:"taskVersion,omitempty"`
+	TraceRevision uint64             `json:"traceRevision,omitempty"`
+	Committed     bool               `json:"committed,omitempty"`
+	ActionID      uint64             `json:"actionId,omitempty"`
+	Sequence      uint64             `json:"sequence"`
+	StoreID       string             `json:"storeId"`
+	Kind          string             `json:"kind"`
+	Mutation      nodra.MutationType `json:"mutation,omitempty"`
+	Name          string             `json:"name,omitempty"`
+	Version       uint64             `json:"version"`
+	Generation    uint64             `json:"generation"`
+	At            time.Time          `json:"at"`
+	Duration      time.Duration      `json:"duration,omitempty"`
+	Previous      json.RawMessage    `json:"previous,omitempty"`
+	State         json.RawMessage    `json:"state,omitempty"`
+	Error         string             `json:"error,omitempty"`
 }
 
 type Snapshot struct {
+	Tasks      []Event   `json:"tasks"`
 	Revision   uint64    `json:"revision"`
 	Cursor     uint64    `json:"cursor"`
 	Capture    Capture   `json:"capture"`
@@ -90,6 +100,9 @@ type Retention struct {
 }
 
 type attached struct {
+	tasks       []Event
+	taskBytes   int
+	taskFloor   uint64
 	revision    uint64
 	lastCapture time.Time
 	capture     func()
@@ -139,6 +152,9 @@ func New(options Options) *Inspector {
 // heterogeneous stores can share an inspector. Unsupported JSON values appear
 // as inspection errors. The returned function detaches this store idempotently.
 func Attach[T any](i *Inspector, id string, source nodra.Reader[T]) (func(), error) {
+	if view, ok := source.(*nodra.ReadOnly[T]); ok && view == nil {
+		return nil, ErrInvalid
+	}
 	if i == nil || source == nil || source.Done() == nil || strings.TrimSpace(id) == "" {
 		return nil, ErrInvalid
 	}
@@ -150,6 +166,7 @@ func Attach[T any](i *Inspector, id string, source nodra.Reader[T]) (func(), err
 		latest := source.Snapshot()
 		raw, message := i.encode(id, latest.Value)
 		i.record(node, Event{StoreID: id, Kind: "snapshot", Version: latest.Version, At: time.Now().UTC(), State: raw, Error: message}, message, true)
+		i.refreshTasks(node, source.TaskSnapshot())
 	}
 	if writable, ok := source.(*nodra.Store[T]); ok {
 		node.restore = func(raw json.RawMessage) error {
@@ -182,7 +199,7 @@ func Attach[T any](i *Inspector, id string, source nodra.Reader[T]) (func(), err
 		state, stateErr := i.encode(id, m.Value)
 		previous, previousErr := i.encode(id, m.Previous)
 		i.record(node, Event{StoreID: id, Kind: "mutation", Mutation: m.Type, Name: m.Name,
-			Version: m.Version, At: m.At, Previous: previous, State: state, Error: joinMessages(stateErr, previousErr)}, stateErr, true)
+			ActionID: m.ActionID, Version: m.Version, At: m.At, Previous: previous, State: state, Error: joinMessages(stateErr, previousErr)}, stateErr, true)
 	})
 	stopAction := source.SubscribeActions(func(a nodra.ActionEvent) {
 		if !i.allowCapture(node, false) {
@@ -193,9 +210,12 @@ func Attach[T any](i *Inspector, id string, source nodra.Reader[T]) (func(), err
 			message = a.Err.Error()
 		}
 		i.record(node, Event{StoreID: id, Kind: "action", ActionID: a.ID, Name: a.Name, At: a.Finished,
-			Version: source.Version(), Duration: a.Duration, Error: message}, "", false)
+			RunID: a.RunID, Key: a.Key, Committed: a.Committed, Version: a.Version, Duration: a.Duration, Error: message}, "", false)
 	})
-	stop := func() { stopMutation(); stopAction() }
+	stopTrace := source.SubscribeActionTrace(func(trace nodra.ActionTrace) { i.recordTrace(node, trace) })
+	watcherStop := make(chan struct{})
+	var stopOnce sync.Once
+	stop := func() { stopOnce.Do(func() { stopMutation(); stopAction(); stopTrace(); close(watcherStop) }) }
 	i.mu.Lock()
 	if i.closed || i.stores[id] != node {
 		i.mu.Unlock()
@@ -204,6 +224,22 @@ func Attach[T any](i *Inspector, id string, source nodra.Reader[T]) (func(), err
 	}
 	node.stop = stop
 	i.mu.Unlock()
+	i.refreshTasks(node, source.TaskSnapshot())
+	go func() {
+		select {
+		case <-source.Done():
+			i.refreshTasks(node, source.TaskSnapshot())
+			i.mu.Lock()
+			if !i.closed && i.stores[id] == node {
+				node.view.Closed = true
+				node.view.Restorable = false
+				i.revision++
+				node.revision = i.revision
+			}
+			i.mu.Unlock()
+		case <-watcherStop:
+		}
+	}()
 	// Catch an update during registration. Intermediate changes in this gap
 	// may coalesce, but the current state must not remain behind the source.
 	latest := source.Snapshot()
@@ -272,7 +308,7 @@ func (i *Inspector) appendLocked(event Event) {
 }
 
 func eventBytes(event Event) int {
-	return 256 + len(event.StoreID) + len(event.Kind) + len(event.Mutation) + len(event.Name) + len(event.Previous) + len(event.State) + len(event.Error)
+	return 256 + len(event.StoreID) + len(event.Kind) + len(event.Mutation) + len(event.Name) + len(event.Key) + len(event.Phase) + len(event.Previous) + len(event.State) + len(event.Error)
 }
 
 func (i *Inspector) record(node *attached, event Event, stateErr string, update bool) {
@@ -288,7 +324,7 @@ func (i *Inspector) record(node *attached, event Event, stateErr string, update 
 	}
 	if update && event.Version >= node.view.Version {
 		node.view.Version, node.view.State, node.view.Error = event.Version, event.State, stateErr
-		node.view.Restorable = node.restore != nil && i.options.AllowRestore && i.options.Redact == nil && stateErr == ""
+		node.view.Restorable = !node.view.Closed && node.restore != nil && i.options.AllowRestore && i.options.Redact == nil && stateErr == ""
 	}
 	event.Generation = node.view.Generation
 	i.appendLocked(event)
@@ -303,6 +339,7 @@ func (i *Inspector) Snapshot() Snapshot {
 	defer i.mu.Unlock()
 	result := Snapshot{Format: 1, CapturedAt: time.Now().UTC(), Stores: make([]Store, 0, len(i.stores)), Events: make([]Event, len(i.events))}
 	result.Revision, result.Cursor, result.Capture = i.revision, i.next, i.captureLocked()
+	result.Tasks = i.tasksLocked()
 	result.Retention = Retention{Bytes: i.historyBytes, MaxBytes: i.options.MaxHistoryBytes, MaxEvents: i.options.Limit, Dropped: i.dropped}
 	for _, node := range i.stores {
 		view := node.view
@@ -320,6 +357,12 @@ func (i *Inspector) Snapshot() Snapshot {
 func (i *Inspector) Clear() {
 	i.mu.Lock()
 	i.events = nil
+	for _, node := range i.stores {
+		node.tasks = nil
+		node.taskBytes = 0
+		node.taskFloor = 0
+		node.view.TasksDropped = 0
+	}
 	i.historyBytes, i.dropped = 0, 0
 	i.revision++
 	i.cleared = i.revision
