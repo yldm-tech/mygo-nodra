@@ -64,17 +64,19 @@ func (i *Inspector) SetCapture(paused bool, interval time.Duration) error {
 
 // Changes is a bounded incremental poll. StoreIDs is authoritative for detachments; Stores contains only states changed since revision. Reset discards the client's event cache after a clear or initial connection. Oldest trims evicted events, Cursor advances through paginated new events, and More requests another page. Initial/reset polls start with the latest page; EventsBefore retrieves older retained history. Returned JSON buffers are independent.
 type Changes struct {
-	Epoch     uint64    `json:"epoch"`
-	Revision  uint64    `json:"revision"`
-	Cursor    uint64    `json:"cursor"`
-	Oldest    uint64    `json:"oldest"`
-	Reset     bool      `json:"reset"`
-	More      bool      `json:"more"`
-	StoreIDs  []string  `json:"storeIds"`
-	Stores    []Store   `json:"stores"`
-	Events    []Event   `json:"events"`
-	Retention Retention `json:"retention"`
-	Capture   Capture   `json:"capture"`
+	Tasks        []Event   `json:"tasks"`
+	TasksChanged bool      `json:"tasksChanged"`
+	Epoch        uint64    `json:"epoch"`
+	Revision     uint64    `json:"revision"`
+	Cursor       uint64    `json:"cursor"`
+	Oldest       uint64    `json:"oldest"`
+	Reset        bool      `json:"reset"`
+	More         bool      `json:"more"`
+	StoreIDs     []string  `json:"storeIds"`
+	Stores       []Store   `json:"stores"`
+	Events       []Event   `json:"events"`
+	Retention    Retention `json:"retention"`
+	Capture      Capture   `json:"capture"`
 }
 
 func pageLimit(limit int) int {
@@ -95,6 +97,10 @@ func (i *Inspector) Changes(revision, cursor uint64, limit int) Changes {
 	limit = pageLimit(limit)
 	reset := revision == 0 || revision < i.cleared || revision > i.revision || cursor > i.next
 	result := Changes{Epoch: i.cleared, Revision: i.revision, Cursor: i.next, Oldest: i.next + 1, Reset: reset, StoreIDs: make([]string, 0, len(i.stores)), Stores: []Store{}, Events: []Event{}, Capture: i.captureLocked(), Retention: Retention{Bytes: i.historyBytes, MaxBytes: i.options.MaxHistoryBytes, MaxEvents: i.options.Limit, Dropped: i.dropped}}
+	result.TasksChanged = reset || revision != i.revision
+	if result.TasksChanged {
+		result.Tasks = i.tasksLocked()
+	}
 	for id, node := range i.stores {
 		result.StoreIDs = append(result.StoreIDs, id)
 		if reset || node.revision > revision {

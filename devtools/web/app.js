@@ -2,7 +2,7 @@
   'use strict';
   const byId = id => document.getElementById(id);
   const token = location.hash.slice(1);
-  let data = { stores: [], events: [] }, storeId = null, sequence = null, loading = false, editorKey = '', editorDirty = false, kind = 'all', cursor = 0, oldest = 0;
+  let data = { stores: [], events: [] }, storeId = null, sequence = null, loading = false, editorKey = '', editorDirty = false, kind = 'all', cursor = 0, oldest = 0, actionFilter = null;
   const format = value => JSON.stringify(value, null, 2);
   const message = text => { byId('message').textContent = text; byId('message').hidden = !text; };
   const element = (tag, className, text) => {
@@ -170,6 +170,31 @@
     }));
   }
 
+  function renderTasks(store) {
+    const tasks = (data.tasks || []).filter(task => task.storeId === storeId);
+    const active = tasks.filter(task => ['queued', 'running'].includes(task.phase)).length;
+    byId('task-count').textContent = active;
+    byId('task-summary').textContent = `${active} active · ${tasks.length} retained${store?.tasksDropped ? ` · ${store.tasksDropped} summaries omitted` : ''}${data.capture?.paused ? ' · capture paused' : ''}`;
+    byId('task-clear-filter').hidden = actionFilter === null;
+    const rows = tasks.map(task => {
+      const button = element('button', 'task-card');
+      button.dataset.actionId = task.actionId;
+      button.setAttribute('aria-pressed', String(actionFilter?.id === task.actionId && actionFilter?.generation === task.generation));
+      const heading = element('span', 'task-card-heading');
+      heading.append(element('strong', '', task.name), element('span', `task-phase ${task.phase}`, task.phase));
+      const progress = element('progress'); progress.max = 1; progress.value = task.progress || 0;
+      progress.setAttribute('aria-label', `${task.name} progress`);
+      const meta = element('span', 'task-meta', `Action #${task.actionId} · Run #${task.runId}${task.key ? ` · ${task.key}` : ''} · ${Math.round((task.progress || 0) * 100)}%${task.committed ? ` · committed v${task.version}` : ''}`);
+      button.append(heading, progress, meta);
+      if (task.phase === 'unobserved') button.append(element('span', 'task-note', 'Task ended outside capture; outcome unavailable.'));
+      else if (task.error) button.append(element('span', 'task-note', task.error));
+      button.onclick = () => { actionFilter = { id: task.actionId, generation: task.generation }; sequence = null; render(); };
+      return button;
+    });
+    byId('tasks').replaceChildren(...rows);
+    if (!rows.length) byId('tasks').append(empty('bolt', 'No tasks captured', 'Async action progress and outcomes appear here.'));
+  }
+
   function render() {
     if (!data.stores.some(store => store.id === storeId)) storeId = data.stores[0]?.id ?? null;
     if (!data.events.some(event => event.sequence === sequence)) sequence = null;
@@ -179,23 +204,23 @@
     byId('stores').replaceChildren(...data.stores.map(item => {
       const button = element('button', 'store'); button.setAttribute('aria-pressed', String(item.id === storeId));
       const label = element('span', 'store-label');
-      label.append(element('span', 'store-name', item.id), element('small', '', item.restorable ? 'Editable state' : 'Read-only state'));
+      label.append(element('span', 'store-name', item.id), element('small', '', item.closed ? 'Closed source' : item.restorable ? 'Editable state' : 'Read-only state'));
       button.append(glyph('cube'), label, element('span', 'store-version', `v${item.version}`));
-      button.onclick = () => { storeId = item.id; sequence = null; render(); };
+      button.onclick = () => { storeId = item.id; sequence = null; actionFilter = null; render(); };
       return button;
     }));
     if (!data.stores.length) byId('stores').append(empty('cube', 'No stores attached', 'Attach a store to begin.'));
     const filter = byId('filter').value.toLowerCase();
     const allEvents = data.events.filter(event => event.storeId === storeId);
-    const events = allEvents.filter(event => (kind === 'all' || (kind === 'error' ? Boolean(event.error) : event.kind === kind)) && `${event.kind} ${event.mutation ?? ''} ${event.name ?? ''} ${event.error ?? ''}`.toLowerCase().includes(filter));
+    const events = allEvents.filter(event => (actionFilter === null || (event.actionId === actionFilter.id && event.generation === actionFilter.generation)) && (kind === 'all' || (kind === 'error' ? Boolean(event.error) : kind === 'action' ? ['action', 'task'].includes(event.kind) : event.kind === kind)) && `${event.kind} ${event.mutation ?? ''} ${event.name ?? ''} ${event.error ?? ''}`.toLowerCase().includes(filter));
     byId('event-count').textContent = events.length;
     const rows = events.toReversed().map(event => {
       const button = element('button', `event ${event.kind}${event.error ? ' error' : ''}`);
       button.setAttribute('aria-pressed', String(event.sequence === sequence)); button.dataset.sequence = event.sequence;
-      const icon = element('span', 'event-icon'); icon.append(glyph(event.error ? 'error' : event.kind === 'action' ? 'bolt' : event.kind === 'mutation' ? 'diff' : 'cube'));
+      const icon = element('span', 'event-icon'); icon.append(glyph(event.error ? 'error' : ['action', 'task'].includes(event.kind) ? 'bolt' : event.kind === 'mutation' ? 'diff' : 'cube'));
       const body = element('span', 'event-body');
       const title = event.name || ({ direct: 'Set state', patch: 'Update state', reset: 'Reset state' }[event.mutation]) || (event.sequence === event.generation ? 'Initial snapshot' : 'Captured snapshot');
-      const meta = element('small', '', `${event.kind[0].toUpperCase()}${event.kind.slice(1)} · v${event.version}`);
+      const meta = element('small', '', `${event.phase || event.kind[0].toUpperCase() + event.kind.slice(1)}${event.actionId ? ` · action #${event.actionId}` : ''}${event.kind === 'task' ? event.committed ? ` · committed v${event.version}` : '' : ` · v${event.version ?? '—'}`}`);
       if (event.kind === 'action') meta.append(document.createTextNode(` · ${((event.duration || 0) / 1e6).toFixed(2)} ms`));
       if (event.error) meta.append(element('span', 'error-tag', 'Error'));
       body.append(element('strong', '', title), meta);
@@ -207,6 +232,7 @@
     });
     byId('events').replaceChildren(...rows);
     if (!rows.length) byId('events').append(empty('search', 'No events found', filter || kind !== 'all' ? 'Try a different filter.' : 'New state changes will appear here.'));
+    renderTasks(store);
     const retention = data.retention;
     byId('retention-status').textContent = retention ? `${(retention.bytes / 1048576).toFixed(1)} / ${(retention.maxBytes / 1048576).toFixed(0)} MB${retention.dropped ? ` · ${retention.dropped} evicted` : ''}` : '';
     byId('session-events').textContent = data.events.length;
@@ -216,7 +242,7 @@
     byId('live').setAttribute('aria-pressed', String(!selected));
     byId('detail-title').textContent = store?.id ?? 'Select a store';
     byId('breadcrumb-store').textContent = store?.id ?? '—';
-    byId('detail-meta').textContent = store ? selected ? selected.kind === 'action' ? `Action #${selected.sequence} · state pane is live v${store.version}` : `Snapshot #${selected.sequence} · Version ${selected.version} · ${new Date(selected.at).toLocaleTimeString()}` : `Live state · Version ${store.version}` : 'Attach a store to start inspecting its state.';
+    byId('detail-meta').textContent = store ? selected ? ['action', 'task'].includes(selected.kind) ? `${selected.kind === 'task' ? 'Task' : 'Action'} #${selected.actionId || selected.sequence}${selected.phase ? ` · ${selected.phase}` : ''} · state pane is live v${store.version}` : `Snapshot #${selected.sequence} · Version ${selected.version} · ${new Date(selected.at).toLocaleTimeString()}` : `Live state · Version ${store.version}` : 'Attach a store to start inspecting its state.';
     byId('action-error').hidden = !selected?.error;
     byId('action-error-text').textContent = selected?.error ?? '';
     const state = selected?.state !== undefined ? selected.state : store?.state;
@@ -255,13 +281,13 @@
       const next = await api(`/api/changes?revision=${data.revision || 0}&cursor=${cursor}&limit=50`);
 
       const changed = next.revision !== data.revision || next.events.length > 0;
-      if (next.reset) data = { stores: [], events: [] };
+      if (next.reset) { data = { stores: [], events: [], tasks: [] }; actionFilter = null; }
       const stores = new Map(data.stores.filter(store => next.storeIds.includes(store.id)).map(store => [store.id, store]));
       for (const store of next.stores) stores.set(store.id, store);
       const events = new Map(data.events.filter(event => event.sequence >= next.oldest).map(event => [event.sequence, event]));
       for (const event of next.events) events.set(event.sequence, event);
       cursor = next.cursor; oldest = next.oldest;
-      data = { format: 1, stores: [...stores.values()].sort((a, b) => a.id.localeCompare(b.id)), events: [...events.values()].sort((a, b) => a.sequence - b.sequence), revision: next.revision, epoch: next.epoch, retention: next.retention, capture: next.capture };
+      data = { tasks: next.tasksChanged ? next.tasks || [] : data.tasks || [], format: 1, stores: [...stores.values()].sort((a, b) => a.id.localeCompare(b.id)), events: [...events.values()].sort((a, b) => a.sequence - b.sequence), revision: next.revision, epoch: next.epoch, retention: next.retention, capture: next.capture };
       if (changed) render();
       byId('history-more').hidden = !data.events.length || data.events[0].sequence <= oldest;
       byId('capture-pause').textContent = next.capture.paused ? 'Resume capture' : 'Pause capture';
@@ -284,7 +310,8 @@
   }
 
   function setView(name) {
-    for (const tab of ['state', 'changes', 'event']) {
+    byId('editor').hidden = name === 'tasks';
+    for (const tab of ['state', 'changes', 'tasks', 'event']) {
       const selected = tab === name;
       byId(`tab-${tab}`).setAttribute('aria-selected', String(selected));
       byId(`tab-${tab}`).tabIndex = selected ? 0 : -1;
@@ -306,6 +333,7 @@
     try { localStorage.setItem('nodra.devtools.theme', theme); } catch { /* Storage is optional. */ }
   };
   byId('refresh').onclick = refresh;
+  byId('task-clear-filter').onclick = () => { actionFilter = null; render(); };
   byId('history-more').onclick = async () => {
     const button = byId('history-more'); button.disabled = true;
     try {
@@ -367,10 +395,10 @@
       const link = document.createElement('a'); link.href = url; link.download = 'nodra-snapshot.json'; link.click(); URL.revokeObjectURL(url);
     } catch (error) { message(error.message); }
   };
-  for (const name of ['state', 'changes', 'event']) {
+  for (const name of ['state', 'changes', 'tasks', 'event']) {
     byId(`tab-${name}`).onclick = () => setView(name);
     byId(`tab-${name}`).onkeydown = event => {
-      const tabs = ['state', 'changes', 'event'];
+      const tabs = ['state', 'changes', 'tasks', 'event'];
       const offset = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0;
       const next = event.key === 'Home' ? 'state' : event.key === 'End' ? 'event' : offset ? tabs[(tabs.indexOf(name) + offset + tabs.length) % tabs.length] : null;
       if (next) { event.preventDefault(); setView(next); byId(`tab-${next}`).focus(); }

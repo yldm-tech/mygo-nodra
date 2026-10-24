@@ -19,7 +19,8 @@ type SelectorOptions[V any] struct {
 // SubscribeSelectorWith calls fn with current and previous selected values.
 // It catches up after registration and ignores obsolete computations. Callbacks
 // run on writer goroutines and may overlap, as with Store.Subscribe.
-func SubscribeSelectorWith[T any, V any](store *Store[T], selector func(T) V, fn func(current, previous V), options SelectorOptions[V]) func() {
+func SubscribeSelectorWith[T any, V any](source Reader[T], selector func(T) V, fn func(current, previous V), options SelectorOptions[V]) func() {
+	store := sourceStore(source)
 	if store == nil || selector == nil || fn == nil {
 		return func() {}
 	}
@@ -112,13 +113,30 @@ type Derived[T any, V any] struct {
 	closed    bool
 }
 
-func Derive[T any, V any](store *Store[T], selector func(T) V, equals func(V, V) bool) *Derived[T, V] {
+func Derive[T any, V any](source Reader[T], selector func(T) V, equals func(V, V) bool) *Derived[T, V] {
+	store := sourceStore(source)
+	if store == nil {
+		return &Derived[T, V]{closed: true}
+	}
+	return derive(store, store.Snapshot, store.Subscribe, selector, equals)
+}
+
+// DeriveProjection memoizes an owned projection without whole-source clones. It follows SubscribeProjection's ownership contract; returned reference values and listener arguments are read-only.
+func DeriveProjection[T any, V any](source Reader[T], project func(T) V, equals func(V, V) bool) *Derived[T, V] {
+	store := sourceStore(source)
+	if store == nil {
+		return &Derived[T, V]{closed: true}
+	}
+	return derive(store, store.borrowedSnapshot, store.subscribeBorrowed, project, equals)
+}
+
+func derive[T any, V any](store *Store[T], snapshot func() Snapshot[T], subscribe func(func(Snapshot[T])) func(), selector func(T) V, equals func(V, V) bool) *Derived[T, V] {
 	d := &Derived[T, V]{source: store, selector: selector, equals: equals, listeners: make(map[uint64]func(V))}
-	if store == nil || selector == nil {
+	if selector == nil {
 		d.closed = true
 		return d
 	}
-	initial := store.Snapshot()
+	initial := snapshot()
 	d.value = selector(initial.Value)
 	d.version = initial.Version
 	changed := func(snapshot Snapshot[T]) {
@@ -165,14 +183,14 @@ func Derive[T any, V any](store *Store[T], selector func(T) V, equals func(V, V)
 			return
 		}
 	}
-	d.stop = store.Subscribe(changed)
+	d.stop = subscribe(changed)
 	initialized := false
 	defer func() {
 		if !initialized {
 			d.stop()
 		}
 	}()
-	changed(store.Snapshot())
+	changed(snapshot())
 	initialized = true
 	return d
 }
@@ -222,6 +240,7 @@ const (
 
 // Mutation contains Pinia-like subscription metadata.
 type Mutation[T any] struct {
+	ActionID uint64
 	Type     MutationType
 	Name     string
 	Previous T
@@ -232,13 +251,17 @@ type Mutation[T any] struct {
 
 // ActionEvent describes one completed action.
 type ActionEvent struct {
-	ID       uint64
-	StoreID  string
-	Name     string
-	Started  time.Time
-	Finished time.Time
-	Duration time.Duration
-	Err      error
+	ID        uint64
+	RunID     uint64
+	Key       string
+	Version   uint64
+	Committed bool
+	StoreID   string
+	Name      string
+	Started   time.Time
+	Finished  time.Time
+	Duration  time.Duration
+	Err       error
 }
 
 // ActionHooks observes action lifecycle events. Before runs before the
@@ -292,7 +315,7 @@ func (s *Store[T]) Do(name string, fn func(*T) error) error {
 			hook.Before(event)
 		}
 	}
-	err := s.updateNamed(name, MutationAction, fn)
+	err := s.updateCommitted(name, MutationAction, fn, func(version uint64) { event.Version = version; event.Committed = true }, event.ID)
 	s.finishAction(event, hooks, err)
 	return err
 }
@@ -302,7 +325,7 @@ func (s *Store[T]) newAction(name string) (ActionEvent, []ActionHooks) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.nextAction++
-	event := ActionEvent{ID: s.nextAction, StoreID: s.id, Name: name, Started: started}
+	event := ActionEvent{ID: s.nextAction, StoreID: s.id, Name: name, Started: started, Version: s.version}
 	hooks := make([]ActionHooks, 0, len(s.actionHooks))
 	for _, hook := range s.actionHooks {
 		hooks = append(hooks, hook)

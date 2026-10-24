@@ -20,7 +20,9 @@ type wordState struct {
 	Words map[string]int `json:"words"`
 }
 
-func run(path string) (result error) {
+func run(path string) error { return runWithRecovery(path, false) }
+
+func runWithRecovery(path string, recoverBackup bool) (result error) {
 	store := nodra.NewWithClone(wordState{Words: map[string]int{}}, func(v wordState) wordState {
 		v.Words = maps.Clone(v.Words)
 		return v
@@ -38,9 +40,16 @@ func run(path string) (result error) {
 			},
 		},
 	}
-	persistence := nodra.NewPersistence(store, nodra.FileStorage{Path: path}, codec)
+	persistence := nodra.NewPersistence(store, nodra.FileStorage{Path: path, Backup: true}, codec)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	if recoverBackup {
+		if err := persistence.LoadBackup(ctx); err != nil {
+			return err
+		}
+		fmt.Printf("Recovered %d words into memory; primary and backup files were left untouched.\n", len(store.Get().Words))
+		return nil
+	}
 	if err := persistence.Load(ctx); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
@@ -68,8 +77,15 @@ func run(path string) (result error) {
 
 func main() {
 	path := flag.String("file", "state.json", "path to the state file")
+	recoverBackup := flag.Bool("recover-backup", false, "validate and load the backup without rewriting either file")
 	flag.Parse()
-	if err := run(*path); err != nil {
+	var err error
+	if *recoverBackup {
+		err = runWithRecovery(*path, true)
+	} else {
+		err = run(*path)
+	}
+	if err != nil {
 		log.Fatal(err)
 	}
 }

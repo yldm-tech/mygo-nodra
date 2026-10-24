@@ -48,6 +48,35 @@ Replacing the whole snapshot with `Set` here could overwrite another field chang
 
 `go run ./examples/mygo` demonstrates a counter and a preferences window with independent selectors, field-level widget commits, and a background action.
 
+## Read-only state and lifecycle ownership
+
+Pass `store.ReadOnly()` to UI code that should observe shared state without changing or closing it. The concrete wrapper hides its backing Store; returning an interface whose dynamic value is the writable Store would not provide that boundary. `Reader[T]` is the observation surface accepted by selectors, projections, derived getters, MyGo invalidation and DevTools attachment. A read-only DevTools source remains non-restorable even when inspector restoration is enabled. Read-only values retain the source's cloning/immutability policy; referenced data is not automatically frozen.
+
+```go
+view := store.ReadOnly()
+nodra.Invalidate(view, window)
+count := nodra.Select(view, func(s AppState) int { return len(s.Items) }).Value
+```
+
+`AsyncAction.Status()` now returns `ReadOnly[AsyncState]` instead of `*Store[AsyncState]`. Ordinary read/subscription calls continue to work. Change explicit status variable/parameter types to `ReadOnly[AsyncState]` or `Reader[AsyncState]`; remove writes or closes on status and close its owning action instead. Helpers that previously accepted `*Store[T]` now accept `Reader[T]`, so explicitly typed helper function variables may need the same parameter change.
+
+Use a `Scope` for one window/module owner. Register stores first, persistence writers next, then actions; drains execute in reverse order. `Observe` owns unsubscribe functions separately so subscriptions stop before drains. A registration racing with shutdown is cleaned immediately and returns `ErrClosed`.
+
+```go
+scope := nodra.NewScope()
+_ = scope.Defer(func(context.Context) error { return store.Close() })
+_ = scope.Defer(writer.Close)
+_ = scope.Defer(action.Close)
+_ = scope.Observe(nodra.Invalidate(store.ReadOnly(), window))
+task, err := action.Run(scope.Context(), input)
+// Handle err. At owner shutdown, use a fresh deadline:
+shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+err = scope.Close(shutdownCtx)
+```
+
+Close cancels `scope.Context()`, stops observations, drains registered resources and preserves all cleanup errors. Concurrent callers share the shutdown result with independent wait deadlines; the first Close supplies the cleanup context. Callbacks must respect that context. Use an independent worker context for write-behind persistence so it can drain after the Scope context is canceled. Do not synchronously close a Scope from one of its own cleanup callbacks, or from a task it must drain. Shared stores can outlive a Scope by leaving their Close unregistered. The workbench demonstrates Scope ownership and window-bound observations.
+
 ## Async actions
 
 `Action` and `Do` are synchronous mutations: their callbacks run under the Store write lock. Use `NewAsyncAction` for file/network work, then commit a short state mutation:
@@ -64,9 +93,29 @@ task, err := search.Run(ctx, query)
 // Handle err; task.Cancel() requests cancellation, task.Wait(waitCtx) observes completion.
 ```
 
-Each run cancels its predecessor and only the latest uncanceled result can commit, including when old work ignores cancellation. `Status()` is an observable `Store[AsyncState]` with a run ID, running flag, monotonic progress from zero to one, and error text. Treat it as read-only. Attach it to MyGo invalidation or DevTools like any Store. Work runs outside the state lock; the apply callback follows normal `UpdateErr` ownership and rollback rules. Copy mutable inputs before Run, or otherwise keep them immutable for the entire run.
+Each run cancels its predecessor and only the latest uncanceled result can commit, including when old work ignores cancellation. `Status()` is an observable `ReadOnly[AsyncState]` with a run ID, running flag, monotonic progress from zero to one, and error text. It exposes no mutation or close methods. Attach it to MyGo invalidation or DevTools like any Store. Work runs outside the state lock; the apply callback follows normal `UpdateErr` ownership and rollback rules. Copy mutable inputs before Run, or otherwise keep them immutable for the entire run.
 
 Action hooks and events cover the work and commit, with a per-store action ID and duration. Panics at the asynchronous user-code boundary become `PanicError`; a notification/hook panic can happen after a successful commit. Cancellation prevents result commits, but cannot undo network/file side effects already performed. Work must honor its context. Closing the source Store cancels active runs. At owner shutdown, call `search.Close(shutdownCtx)` before closing stores; it cancels and waits, and closes the status Store after terminal status is published. A timed-out Close can be called again. Do not wait or close synchronously from that task's own work, hooks or subscribers.
+
+### Scheduling and per-task status
+
+`NewAsyncActionWithOptions` adds explicit scheduling without changing the default constructor's latest-result policy:
+
+```go
+action, err := nodra.NewAsyncActionWithOptions(store, "load item", work, apply,
+    nodra.ActionOptions[Request]{
+        Policy: nodra.LatestWins,
+        Key: func(request Request) string { return request.ItemID },
+        MaxConcurrent: 4,
+        QueueLimit: 32,
+    })
+```
+
+LatestWins replaces work only for the same key; different keys are independent. Use `QueueAll` for work that must retain every accepted input. QueueAll defaults to one worker for FIFO starts/commits; with more workers, starts are FIFO and commits follow completion order. LatestWins with zero MaxConcurrent preserves unbounded legacy behavior. Bounded actions default to 64 pending entries, and a full queue returns `ErrQueueFull` without canceling existing work. A superseded queued entry can be replaced even when that queue is full. Canceled work that has not returned still occupies its concurrency slot. Run accepts input without waiting for a work slot; canceled queued tasks finish without executing work.
+
+`Task.Status()` exposes that task's key, queued/running/terminal phase, progress and diagnostic error. The status Store closes after terminal status. The action-level Status describes the most recently accepted run, which is not a count of all active work. Use `ActiveTasks()` or `TaskSnapshot()` on the source for current work. Do not wait for another queued task synchronously from work, hooks or subscribers of the same bounded action; that can exhaust its own work slots. Progress may be reported concurrently during work; stop reporting when work returns.
+
+`SubscribeActionTrace` observes async acceptance, start, progress and terminal outcome. Action ID links traces to mutation and completion events; RunID is local to one action. TaskVersion orders one task's status while Revision orders source trace publication; callbacks can still overlap. Committed/Version identify the accepted publication even if notifications later fail. A Store Batch coalesces publication across writers, so its final mutation has no single ActionID and individual batched actions do not claim a published commit version. Durations include queue waiting time. Terminal task entries are released from the source's active map.
 
 ## Owned projections for large state
 
@@ -77,7 +126,7 @@ count := nodra.Select(store, func(s AppState) int { return len(s.Items) }).Value
 items := nodra.Select(store, func(s AppState) []Item { return slices.Clone(s.Items) }).Value
 ```
 
-The callback runs under the read lock: do not mutate state, retain source references, reenter the Store or block. Copy nested mutable references too. The returned snapshot includes the source version. `SubscribeProjection` / `SubscribeProjectionWith` offer the same explicit ownership boundary for subscriptions without a whole-state copy per listener. Their projector runs on immutable source snapshots and must return independently owned projections; callbacks must treat current/previous projections as immutable. Default stores still require immutable referenced data. Existing `SubscribeSelector` remains the convenient isolated choice. Only opt in to projections where the smaller copy matters.
+The callback runs under the read lock: do not mutate state, retain source references, reenter the Store or block. Copy nested mutable references too. The returned snapshot includes the source version. `SubscribeProjection` / `SubscribeProjectionWith` offer the same explicit ownership boundary for subscriptions without a whole-state copy per listener. Their projector runs on immutable source snapshots and must return independently owned projections; callbacks must treat current/previous projections as immutable. Default stores still require immutable referenced data. Existing `SubscribeSelector` remains the convenient isolated choice. Only opt in to projections where the smaller copy matters. `InvalidateProjection` / `InvalidateProjectionWith` apply the same policy to window-bound redraws; `DeriveProjection` memoizes an owned projection. These accept read-only views and preserve the projector contract throughout the binding/derived pipeline. Derived reference values and listener arguments are read-only.
 
 ## Grouped and filtered undo
 
@@ -99,7 +148,7 @@ end()
 
 ## Desktop workflow example
 
-`go run ./examples/workbench` opens a local file-name search and a settings form. It uses real directory traversal, cooperative search cancellation, bounded results, UI-local drafts, asynchronous validation and atomic settings-file writes. Invalid directories and failed writes leave the draft available and the committed preferences unchanged. Cancel edits reloads the committed preferences. The settings path defaults to the user configuration directory; override it with `-settings /path/to/settings.json`.
+`go run ./examples/workbench` opens a local file-name search and a settings form. It uses real directory traversal, cooperative search cancellation, bounded results, UI-local drafts, asynchronous validation and atomic settings-file writes. Invalid directories and failed writes leave the draft available and the committed preferences unchanged. Cancel edits reloads the committed preferences. The settings path defaults to the user configuration directory; override it with `-settings /path/to/settings.json`. Saves also maintain a `.bak` copy. Add `-devtools` to print a local read-only inspection URL for real search/save task lifecycles.
 
 ## Core usage
 
@@ -213,6 +262,14 @@ err := persistence.Load(ctx) // completes migrations before changing the store
 Missing migrations, invalid migration output and future schemas return errors.
 A failed load leaves the store and file untouched. Load before starting autosave;
 successful migration is written by a subsequent `Save` or autosave.
+
+## Validated persistence and backup recovery
+
+`NewPersistenceWithOptions` accepts `PersistenceOptions[T]{Validate: ...}`. Validation runs after decoding/migration and before Store replacement, and before encoding/saving. It must be pure and concurrency-safe. A failed load or validation leaves memory and files unchanged. `LoadError` identifies `read`, `decode` or `validate`, distinguishes backup loads, and preserves the underlying error for `errors.Is`/`errors.As`.
+
+Enable `FileStorage{Path: path, Backup: true}` to write an independently replaced `path + ".bak"` copy after successful primary replacement. Backup I/O errors are returned; the primary may already have been saved when a backup fails. The two files are not one transaction. Keep one Persistence writer per destination, and reserve its `.bak` path for this backup. Applications must surface save errors rather than assume both files were updated.
+
+After a failed startup Load, stop and present that error before starting autosave. `persistence.LoadBackup(ctx)` explicitly validates and loads the backup into memory without rewriting either file. A later Save intentionally persists the recovered/current state. No silent fallback discards a corrupt original. Stores without a backup-capable backend return `ErrNoBackup`. Try `go run ./examples/persistent -file /path/to/state.json -recover-backup` to inspect recovery without modifying the files.
 
 ## Write-behind persistence
 

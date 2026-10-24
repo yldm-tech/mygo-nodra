@@ -99,6 +99,23 @@ h1 { font-size: 23px; font-weight: 600; letter-spacing: -.7px; line-height: 1.25
 .tabs button .count { min-width: 16px; height: 15px; font-size: 10px; }
 .tabs button[aria-selected="true"] .count { background: var(--accent-soft); color: var(--accent); }
 .view-mode { margin-left: auto; color: var(--faint); font-size: 10px; letter-spacing: .7px; }
+.task-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 18px; }
+.task-heading h3 { font-size: 14px; font-weight: 600; }
+.task-heading p { margin-top: 7px; color: var(--muted); font-size: 11px; }
+.task-card { display: flex; flex-direction: column; align-items: stretch; width: 100%; gap: 12px; padding: 16px; margin-bottom: 12px; text-align: left; white-space: normal; background: var(--surface); border-color: var(--line); border-radius: 9px; }
+.task-card[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); }
+.task-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.task-card-heading strong, .task-meta, .task-note { overflow-wrap: anywhere; min-width: 0; }
+.task-phase { border-radius: 4px; padding: 3px 6px; color: var(--muted); background: var(--hover); font-size: 10px; }
+.task-phase.running, .task-phase.queued { color: var(--accent); background: var(--accent-soft); }
+.task-phase.succeeded { color: var(--green); background: var(--green-bg); }
+.task-phase.failed { color: var(--red); background: var(--red-bg); }
+.task-card progress { display: block; width: 100%; height: 5px; accent-color: var(--accent); }
+.task-card progress { appearance: none; border: 0; border-radius: 3px; overflow: hidden; background: var(--hover); }
+.task-card progress::-webkit-progress-bar { background: var(--hover); border-radius: 3px; }
+.task-card progress::-webkit-progress-value { background: var(--accent); border-radius: 3px; }
+.task-card progress::-moz-progress-bar { background: var(--accent); border-radius: 3px; }
+.task-meta, .task-note { font-size: 11px; font-weight: 400; line-height: 1.6; color: var(--muted); }
 .inspector-body { overflow: auto; min-height: 0; flex: 1; padding: 24px 28px 30px; }
 .code-card { border: 1px solid var(--line-strong); border-radius: 8px; overflow: hidden; background: var(--surface); box-shadow: var(--shadow); }
 .code-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; height: 39px; padding: 0 13px; background: var(--sidebar); border-bottom: 1px solid var(--line); color: var(--faint); font-size: 10px; }

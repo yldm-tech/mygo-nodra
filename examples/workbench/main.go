@@ -16,6 +16,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"github.com/yldm-tech/nodra"
+	"github.com/yldm-tech/nodra/devtools"
 )
 
 type settings struct {
@@ -35,6 +36,7 @@ type searchResult struct {
 }
 
 type workbench struct {
+	scope     *nodra.Scope
 	settings  *nodra.Store[settings]
 	results   *nodra.Store[searchResult]
 	search    *nodra.AsyncAction[searchResult, searchInput, searchResult]
@@ -48,35 +50,41 @@ type workbench struct {
 
 func newWorkbench(root, path string) (*workbench, error) {
 	prefs := nodra.New(settings{Root: root})
-	persistence := nodra.NewPersistence(prefs, nodra.FileStorage{Path: path}, nodra.JSONCodec[settings]{})
+	persistence := nodra.NewPersistenceWithOptions(prefs, nodra.FileStorage{Path: path, Backup: true}, nodra.JSONCodec[settings]{}, nodra.PersistenceOptions[settings]{Validate: validateSettings})
 	notice := ""
 	if err := persistence.Load(context.Background()); err != nil && !errors.Is(err, os.ErrNotExist) {
 		notice = "Could not load settings: " + err.Error()
 	}
-	app := &workbench{settings: prefs, draft: prefs.Get(), notice: notice, results: nodra.NewWithClone(searchResult{}, func(v searchResult) searchResult { v.Files = slices.Clone(v.Files); return v })}
+	app := &workbench{scope: nodra.NewScope(), settings: prefs, draft: prefs.Get(), notice: notice, results: nodra.NewWithClone(searchResult{}, func(v searchResult) searchResult { v.Files = slices.Clone(v.Files); return v })}
+	_ = app.scope.Defer(func(context.Context) error { return app.settings.Close() })
+	_ = app.scope.Defer(func(context.Context) error { return app.results.Close() })
+	success := false
+	defer func() {
+		if !success {
+			_ = app.scope.Close(context.Background())
+		}
+	}()
 	var err error
 	app.search, err = nodra.NewAsyncAction(app.results, "search files", searchFiles, func(s *searchResult, result searchResult) error { *s = result; return nil })
 	if err != nil {
 		return nil, err
 	}
+	_ = app.scope.Defer(app.search.Close)
 	app.save, err = nodra.NewAsyncAction(prefs, "save settings", func(ctx context.Context, value settings, _ func(float64)) (settings, error) {
-		info, err := os.Stat(value.Root)
-		if err != nil {
+		if err := validateSettings(value); err != nil {
 			return value, err
-		}
-		if !info.IsDir() {
-			return value, errors.New("choose a folder, not a file")
 		}
 		raw, err := (nodra.JSONCodec[settings]{}).Encode(value)
 		if err != nil {
 			return value, err
 		}
-		return value, (nodra.FileStorage{Path: path}).Save(ctx, raw)
+		return value, (nodra.FileStorage{Path: path, Backup: true}).Save(ctx, raw)
 	}, func(s *settings, value settings) error { *s = value; return nil })
 	if err != nil {
-		_ = app.search.Close(context.Background())
 		return nil, err
 	}
+	_ = app.scope.Defer(app.save.Close)
+	success = true
 	return app, nil
 }
 
@@ -123,7 +131,7 @@ func searchFiles(ctx context.Context, input searchInput, report func(float64)) (
 }
 
 func (app *workbench) startSearch() {
-	task, err := app.search.Run(context.Background(), searchInput{Settings: app.settings.Get(), Query: app.query})
+	task, err := app.search.Run(app.scope.Context(), searchInput{Settings: app.settings.Get(), Query: app.query})
 	if err != nil {
 		app.notice = err.Error()
 		return
@@ -145,7 +153,7 @@ func (app *workbench) saveDraft() {
 		return
 	}
 	app.draft.Root = root
-	task, err := app.save.Run(context.Background(), app.draft)
+	task, err := app.save.Run(app.scope.Context(), app.draft)
 	if err != nil {
 		app.notice = err.Error()
 		return
@@ -158,7 +166,7 @@ func (app *workbench) view(c *ui.Context) {
 	theme := c.Theme()
 	search, save := app.search.Status().Get(), app.save.Status().Get()
 	// Copy only the result fields displayed by this frame, rather than cloning unrelated state.
-	result := nodra.Select(app.results, func(s searchResult) searchResult { s.Files = slices.Clone(s.Files); return s }).Value
+	result := nodra.Select(app.results.ReadOnly(), func(s searchResult) searchResult { s.Files = slices.Clone(s.Files); return s }).Value
 	dirty := app.draft != app.settings.Get()
 	ui.Column(c).Fill().Padding(24).Gap(20).Children(func() {
 		ui.Row(c).FillWidth().Gap(12).Children(func() {
@@ -232,14 +240,9 @@ func (app *workbench) view(c *ui.Context) {
 func (app *workbench) close() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := app.search.Close(ctx); err != nil {
+	if err := app.scope.Close(ctx); err != nil {
 		log.Print(err)
 	}
-	if err := app.save.Close(ctx); err != nil {
-		log.Print(err)
-	}
-	_ = app.results.Close()
-	_ = app.settings.Close()
 }
 
 func main() {
@@ -252,20 +255,53 @@ func main() {
 		log.Fatal(err)
 	}
 	path := flag.String("settings", filepath.Join(config, "nodra-workbench", "settings.json"), "settings file")
+	inspect := flag.Bool("devtools", false, "print a local DevTools URL for search and save tasks")
 	flag.Parse()
 	app, err := newWorkbench(root, *path)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer app.close()
+	if *inspect {
+		inspector := devtools.New(devtools.Options{})
+		_ = app.scope.Defer(func(context.Context) error { return inspector.Close() })
+		for _, attach := range []func() (func(), error){
+			func() (func(), error) { return devtools.Attach(inspector, "preferences", app.settings.ReadOnly()) },
+			func() (func(), error) { return devtools.Attach(inspector, "search", app.results.ReadOnly()) },
+		} {
+			stop, err := attach()
+			if err != nil {
+				log.Print(err)
+				return
+			}
+			_ = app.scope.Observe(stop)
+		}
+		url, err := inspector.Listen()
+		if err != nil {
+			log.Print(err)
+			return
+		}
+		log.Print(url)
+	}
 	mygo.App.WhenReady(func() {
 		window := mygo.NewWindow(mygo.WindowOptions{Title: "Nodra workspace search", Width: 960, Height: 640, Content: ui.View(app.view)})
-		nodra.Invalidate(app.settings, window)
-		nodra.Invalidate(app.results, window)
-		nodra.Invalidate(app.search.Status(), window)
-		nodra.Invalidate(app.save.Status(), window)
+		_ = app.scope.Observe(nodra.Invalidate(app.settings.ReadOnly(), window))
+		_ = app.scope.Observe(nodra.InvalidateProjection(app.results.ReadOnly(), window, func(s searchResult) searchResult { s.Files = slices.Clone(s.Files); return s }))
+		_ = app.scope.Observe(nodra.Invalidate(app.search.Status(), window))
+		_ = app.scope.Observe(nodra.Invalidate(app.save.Status(), window))
 	})
 	if err := mygo.App.Run(); err != nil {
 		log.Print(err)
 	}
+}
+
+func validateSettings(value settings) error {
+	info, err := os.Stat(value.Root)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return errors.New("choose a folder, not a file")
+	}
+	return nil
 }

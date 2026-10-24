@@ -23,6 +23,15 @@ func (JSONCodec[T]) Decode(data []byte) (T, error) {
 type FileStorage struct {
 	Path string
 	Perm os.FileMode
+	// Backup writes an independent Path+".bak" copy after each successful primary replacement. A backup failure is returned even though the primary may already contain the new state. Use one Persistence writer per destination.
+	Backup bool
+}
+
+func (f FileStorage) LoadBackup(ctx context.Context) ([]byte, error) {
+	if !f.Backup || f.Path == "" {
+		return nil, ErrNoBackup
+	}
+	return (FileStorage{Path: f.Path + ".bak"}).Load(ctx)
 }
 
 func (f FileStorage) Load(ctx context.Context) ([]byte, error) {
@@ -75,6 +84,11 @@ func (f FileStorage) Save(ctx context.Context, data []byte) (err error) {
 	}
 	if err = os.Rename(name, f.Path); err != nil {
 		return fmt.Errorf("nodra: replace %s: %w", f.Path, err)
+	}
+	if f.Backup {
+		if err := (FileStorage{Path: f.Path + ".bak", Perm: f.Perm}).Save(ctx, data); err != nil {
+			return fmt.Errorf("nodra: primary saved, backup failed: %w", err)
+		}
 	}
 	return nil
 }

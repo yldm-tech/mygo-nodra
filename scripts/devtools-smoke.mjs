@@ -17,7 +17,7 @@ let browser;
 const children = [];
 let fixtureRevision = 100;
 function changesFixture(snapshot) {
-  return { ...snapshot, revision: ++fixtureRevision, cursor: Math.max(0, ...snapshot.events.map(event => event.sequence)), oldest: snapshot.events[0]?.sequence || 1, reset: true, more: false, storeIds: snapshot.stores.map(store => store.id), capture: { paused: false, sampleIntervalMS: 0, skipped: 0 } };
+  return { ...snapshot, tasks:snapshot.tasks || [], tasksChanged:true, revision: ++fixtureRevision, cursor: Math.max(0, ...snapshot.events.map(event => event.sequence)), oldest: snapshot.events[0]?.sequence || 1, reset: true, more: false, storeIds: snapshot.stores.map(store => store.id), capture: { paused: false, sampleIntervalMS: 0, skipped: 0 } };
 }
 
 async function demo(restore) {
@@ -242,8 +242,52 @@ try {
   assert.match(await large.locator('#changes').innerText(), /More changes may exist/);
   assert.doesNotMatch(await large.locator('#changes').innerText(), /identical/);
 
+  const tasks = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  tasks.on('pageerror', error => errors.push(error.message));
+  const now = new Date().toISOString();
+  const taskFixture = {
+    stores: [{ id: 'workspace', version: 4, generation: 1, state: { matches: 12 }, tasksDropped: 2 }],
+    events: [
+      { sequence: 1, generation: 1, storeId: 'workspace', actionId: 21, runId: 1, kind: 'task', name: 'Index workspace', phase: 'running', progress: .4, at: now },
+      { sequence: 2, generation: 1, storeId: 'workspace', actionId: 21, kind: 'mutation', mutation: 'action', name: 'Index workspace', version: 4, previous: { matches: 0 }, state: { matches: 12 }, at: now },
+      { sequence: 3, generation: 1, storeId: 'workspace', actionId: 22, kind: 'task', name: 'Read metadata', phase: 'queued', at: now }
+    ],
+    tasks: [
+      { actionId: 21, runId: 1, generation: 1, storeId: 'workspace', name: 'Index workspace', key: 'documents', phase: 'running', progress: .4, at: now },
+      { actionId: 22, runId: 2, generation: 1, storeId: 'workspace', name: 'Read metadata', key: 'photos', phase: 'queued', progress: 0, at: now },
+      { actionId: 20, runId: 3, generation: 1, storeId: 'workspace', name: 'Save preferences', phase: 'failed', error: 'Disk is full', at: now }
+    ]
+  };
+  await tasks.route('**/api/changes**', route => route.fulfill({ json: changesFixture(taskFixture) }));
+  await tasks.goto(readonlyURL);
+  await tasks.getByText('Connected', { exact: true }).waitFor();
+  await tasks.locator('#tab-tasks').click();
+  assert.equal(await tasks.locator('.task-card').count(), 3);
+  assert.match(await tasks.locator('#task-summary').innerText(), /2 active.*2 summaries omitted/);
+  assert.equal(await tasks.getByRole('progressbar', { name: 'Index workspace progress' }).getAttribute('value'), '0.4');
+  await tasks.locator('.task-card[data-action-id="21"]').click();
+  assert.equal(await tasks.locator('.event').count(), 2);
+  await tasks.locator('#task-clear-filter').click();
+  assert.equal(await tasks.locator('.event').count(), 3);
+  if (process.env.DEVTOOLS_SCREENSHOT) {
+    await tasks.screenshot({ path: process.env.DEVTOOLS_SCREENSHOT.replace(/\.png$/, '-tasks.png') });
+    await tasks.locator('#theme').click();
+    await tasks.screenshot({ path: process.env.DEVTOOLS_SCREENSHOT.replace(/\.png$/, '-tasks-dark.png') });
+  }
+  for (const width of [768, 390]) {
+    await tasks.setViewportSize({ width, height: 900 });
+    assert.equal(await tasks.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `Tasks overflow at ${width}px`);
+    assert.equal(await tasks.locator('#tasks').isVisible(), true);
+  }
+  taskFixture.tasks[0] = { ...taskFixture.tasks[0], phase: 'succeeded', progress: 1, committed: true, version: 4 };
+  taskFixture.tasks[1] = { ...taskFixture.tasks[1], phase: 'unobserved' };
+  await tasks.locator('#refresh').click();
+  await tasks.getByText('Task ended outside capture; outcome unavailable.', { exact: true }).waitFor();
+  assert.match(await tasks.locator('.task-card[data-action-id="21"]').innerText(), /committed v4/);
+  assert.equal(await tasks.locator('#task-count').innerText(), '0');
+
   assert.deepEqual(errors, []);
-  console.log('DevTools browser smoke passed: inspection, errors, type/text filters, clipboard, keyboard tabs, saved theme, responsive layouts, restore, JSON validation, retained edits, complete export, diff, clear, read-only mode, lazy trees, paginated JSON/history, incremental updates, pause/resume, sampling, state search and diff limits.');
+  console.log('DevTools browser smoke passed: inspection, errors, type/text filters, clipboard, keyboard tabs, saved theme, responsive layouts, restore, JSON validation, retained edits, complete export, diff, clear, read-only mode, lazy trees, paginated JSON/history, incremental updates, pause/resume, sampling, state search diff limits, task progress/outcomes, related-event filtering and responsive task cards.');
 } finally {
   if (browser) await browser.close();
   for (const child of children) {
