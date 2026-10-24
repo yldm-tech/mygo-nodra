@@ -7,6 +7,11 @@
 
 * add state isolation, migrations, async persistence, and DevTools ([#12](https://github.com/yldm-tech/nodra/issues/12)) ([3b652d2](https://github.com/yldm-tech/nodra/commit/3b652d28de2ee2c8a4778a29c132852149f9c289))
 
+
+### Bug Fixes
+
+* preserve reactive versions and history commit consistency ([#14](https://github.com/yldm-tech/nodra/issues/14)) ([eed35be](https://github.com/yldm-tech/nodra/commit/eed35be1ac6147edf34321013dde18a501e9da6c))
+
 ## [0.2.0](https://github.com/yldm-tech/nodra/compare/v0.1.0...v0.2.0) (2026-10-21)
 
 
