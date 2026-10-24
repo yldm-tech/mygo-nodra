@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.0](https://github.com/yldm-tech/nodra/compare/v0.5.0...v0.6.0) (2026-10-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* integrate read-only state, task scheduling and recovery diagnostics ([#23](https://github.com/yldm-tech/nodra/issues/23))
+
+### Features
+
+* complete async state, history and DevTools workflows ([#21](https://github.com/yldm-tech/nodra/issues/21)) ([e2d780d](https://github.com/yldm-tech/nodra/commit/e2d780dbfe88029c23b18782436f01b46c8614ec))
+* integrate read-only state, task scheduling and recovery diagnostics ([#23](https://github.com/yldm-tech/nodra/issues/23)) ([c317a3e](https://github.com/yldm-tech/nodra/commit/c317a3eb453927783b62cc252afb74a47fb2c48c))
+
 ## [0.5.0](https://github.com/yldm-tech/nodra/compare/v0.4.0...v0.5.0) (2026-10-24)
 
 
