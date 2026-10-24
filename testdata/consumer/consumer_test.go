@@ -37,7 +37,11 @@ func TestPublicAPI(t *testing.T) {
 	if task.Status().Get().Phase != nodra.TaskSucceeded {
 		t.Fatal("task status")
 	}
-	p := nodra.NewPersistence(source, nodra.FileStorage{Path: filepath.Join(t.TempDir(), "state.json")}, nodra.JSONCodec[int]{})
+	storage, err := (nodra.FileStorage{Path: filepath.Join(t.TempDir(), "state.json")}).WithConflictDetection(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := nodra.NewPersistence(source, storage, nodra.JSONCodec[int]{})
 	writer, err := p.AutoSaveAsync(context.Background(), nodra.AsyncOptions{})
 	if err != nil {
 		t.Fatal(err)

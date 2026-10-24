@@ -328,6 +328,21 @@ Enable `FileStorage{Path: path, Backup: true}` to write an independently replace
 
 After a failed startup Load, stop and present that error before starting autosave. `persistence.LoadBackup(ctx)` explicitly validates and loads the backup into memory without rewriting either file. A later Save intentionally persists the recovered/current state. No silent fallback discards a corrupt original. Stores without a backup-capable backend return `ErrNoBackup`. Try `go run ./examples/persistent -file /path/to/state.json -recover-backup` to inspect recovery without modifying the files.
 
+For multiple cooperating instances, explicitly enable content-conflict detection:
+
+```go
+storage, err := (nodra.FileStorage{Path: path, Backup: true}).WithConflictDetection(ctx)
+// Handle err, then use the checked backend with ordinary Persistence APIs.
+persistence := nodra.NewPersistence(store, storage, codec)
+if err := persistence.Save(ctx); errors.Is(err, nodra.ErrFileConflict) {
+    // Ask the application to reload/merge or save a separate copy.
+}
+```
+
+The constructor observes current primary bytes (or absence) as the baseline without loading Store state. `CheckedFileStorage` checks a SHA-256 fingerprint under an OS advisory lock before replacing the file. Independent instances/processes using this backend coordinate through `path + ".lock"`; reserve that sidecar and never remove it while instances may be active. A `FileConflictError` carries expected/actual fingerprints without file contents. Rejected saves preserve primary and backup bytes, and retries keep failing until the application explicitly loads/reconciles or chooses another destination. `Load` acknowledges current primary bytes, including absence while returning `os.ErrNotExist`; decode/validation errors must still stop startup autosave. `LoadBackup` does not acknowledge changed primary content. A backup failure after primary replacement acknowledges that primary so retry can complete the backup without a false conflict. Async writers surface conflicts through Errors/Flush/Close and remain pending.
+
+All writers must opt in for coordinated replacement. Plain FileStorage and external editors do not honor the lock: changes completed before the check are detected, but an uncooperative concurrent writer can race the check and replacement. This is not an atomic compare-and-swap against arbitrary filesystem writers. Use regular local files and one canonical destination; primary symlinks/nonregular files are rejected, parent directory aliases are canonicalized, and hard-link aliases/network filesystem locking are outside the contract. Equal-content replacements and changes reverted before the next check do not count as content conflicts. The default FileStorage remains unchanged.
+
 ## Write-behind persistence
 
 Move encoding and disk I/O off the goroutine updating the store:

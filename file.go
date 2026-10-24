@@ -43,7 +43,11 @@ func (f FileStorage) Load(ctx context.Context) ([]byte, error) {
 	}
 	return os.ReadFile(f.Path)
 }
-func (f FileStorage) Save(ctx context.Context, data []byte) (err error) {
+func (f FileStorage) Save(ctx context.Context, data []byte) error {
+	return f.save(ctx, data, nil)
+}
+
+func (f FileStorage) save(ctx context.Context, data []byte, primarySaved func()) (err error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -84,6 +88,9 @@ func (f FileStorage) Save(ctx context.Context, data []byte) (err error) {
 	}
 	if err = os.Rename(name, f.Path); err != nil {
 		return fmt.Errorf("nodra: replace %s: %w", f.Path, err)
+	}
+	if primarySaved != nil {
+		primarySaved()
 	}
 	if f.Backup {
 		if err := (FileStorage{Path: f.Path + ".bak", Perm: f.Perm}).Save(ctx, data); err != nil {
