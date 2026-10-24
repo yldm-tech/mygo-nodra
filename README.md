@@ -48,6 +48,59 @@ Replacing the whole snapshot with `Set` here could overwrite another field chang
 
 `go run ./examples/mygo` demonstrates a counter and a preferences window with independent selectors, field-level widget commits, and a background action.
 
+## Async actions
+
+`Action` and `Do` are synchronous mutations: their callbacks run under the Store write lock. Use `NewAsyncAction` for file/network work, then commit a short state mutation:
+
+```go
+search, err := nodra.NewAsyncAction(store, "search", func(ctx context.Context, query string, progress func(float64)) ([]Item, error) {
+    return fetchItems(ctx, query)
+}, func(s *AppState, items []Item) error {
+    s.Items = items
+    return nil
+})
+// Handle err before using search.
+task, err := search.Run(ctx, query)
+// Handle err; task.Cancel() requests cancellation, task.Wait(waitCtx) observes completion.
+```
+
+Each run cancels its predecessor and only the latest uncanceled result can commit, including when old work ignores cancellation. `Status()` is an observable `Store[AsyncState]` with a run ID, running flag, monotonic progress from zero to one, and error text. Treat it as read-only. Attach it to MyGo invalidation or DevTools like any Store. Work runs outside the state lock; the apply callback follows normal `UpdateErr` ownership and rollback rules. Copy mutable inputs before Run, or otherwise keep them immutable for the entire run.
+
+Action hooks and events cover the work and commit, with a per-store action ID and duration. Panics at the asynchronous user-code boundary become `PanicError`; a notification/hook panic can happen after a successful commit. Cancellation prevents result commits, but cannot undo network/file side effects already performed. Work must honor its context. Closing the source Store cancels active runs. At owner shutdown, call `search.Close(shutdownCtx)` before closing stores; it cancels and waits, and closes the status Store after terminal status is published. A timed-out Close can be called again. Do not wait or close synchronously from that task's own work, hooks or subscribers.
+
+## Owned projections for large state
+
+`Get` and ordinary selector subscriptions preserve the Store's full-state cloning policy. For hot reads, `Select` borrows read-only state and copies only the projection you return:
+
+```go
+count := nodra.Select(store, func(s AppState) int { return len(s.Items) }).Value
+items := nodra.Select(store, func(s AppState) []Item { return slices.Clone(s.Items) }).Value
+```
+
+The callback runs under the read lock: do not mutate state, retain source references, reenter the Store or block. Copy nested mutable references too. The returned snapshot includes the source version. `SubscribeProjection` / `SubscribeProjectionWith` offer the same explicit ownership boundary for subscriptions without a whole-state copy per listener. Their projector runs on immutable source snapshots and must return independently owned projections; callbacks must treat current/previous projections as immutable. Default stores still require immutable referenced data. Existing `SubscribeSelector` remains the convenient isolated choice. Only opt in to projections where the smaller copy matters.
+
+## Grouped and filtered undo
+
+```go
+history := nodra.TrackWith(store, nodra.HistoryOptions[AppState]{
+    Limit: 50,
+    Equals: func(a, b AppState) bool { return a.Title == b.Title },
+    Restore: func(current, recorded AppState) AppState {
+        current.Title = recorded.Title
+        return current
+    },
+})
+end, err := history.BeginGroup() // keep end until the drag/edit interaction finishes
+// Handle err. Updates still publish for each frame.
+end()
+```
+
+`Equals` ignores changes outside the edited fields. `Restore` preserves their current values during undo/redo; filtering alone does not preserve fields when restoring whole snapshots. These callbacks must be pure, must not mutate arguments, and must not reenter the Store or History because they can run under locks. Nested groups merge into one undo step; repeated end calls are safe. Concurrent writers join an open group. Travel is rejected with `ErrHistoryGroup` until every group ends. An empty/filtered group adds no step. `Track(store, limit)` retains its existing behavior.
+
+## Desktop workflow example
+
+`go run ./examples/workbench` opens a local file-name search and a settings form. It uses real directory traversal, cooperative search cancellation, bounded results, UI-local drafts, asynchronous validation and atomic settings-file writes. Invalid directories and failed writes leave the draft available and the committed preferences unchanged. Cancel edits reloads the committed preferences. The settings path defaults to the user configuration directory; override it with `-settings /path/to/settings.json`.
+
 ## Core usage
 
 ```go
@@ -73,13 +126,15 @@ tasks.Update(func(value *[]Task) {
 - `SubscribeSelector` and `SubscribeSelectorWith` for focused updates with previous values
 - `Derive` for memoized computed/getter values
 - `Action` / `Do` with action timing and error events
+- Latest-result asynchronous actions with cancellation, progress, observable status and explicit shutdown
+- Opt-in owned projections that avoid whole-state copies for hot reads and subscriptions
 - `SubscribeMutations` with direct, patch, reset and action metadata
 - `Create`, `Define`, `State`, `Patch`, and `Reset` aliases for familiar Pinia/Zustand workflows
 - Store IDs and independent named store instances
 - Action lifecycle hooks: before, after, and error
 - Nested `Batch` notification groups that publish one final snapshot
 - `Transaction` for one serialized, fallible mutation
-- `Track` history with bounded undo and redo
+- `Track` / `TrackWith` history with bounded undo/redo, recording filters and cross-frame edit groups
 - `Persistence[T]` with pluggable storage and codec interfaces
 - Ready-to-use `FileStorage` and `JSONCodec[T]` with atomic file replacement
 - `VersionedJSONCodec[T]` with sequential schema migrations and explicit legacy JSON support

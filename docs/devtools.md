@@ -130,3 +130,13 @@ PLAYWRIGHT_PATH=/tmp/nodra-browser/node_modules/playwright node scripts/devtools
 ![Lazy tree inspection of 2,500 records](devtools-tree.png)
 
 ![Lazy tree inspection in the dark theme](devtools-tree-dark.png)
+
+## Incremental transport and paginated history
+
+The browser polls `/api/changes` with a revision and event cursor, requesting at most 50 events at a time. Unchanged polls transmit no Store state or event payloads. Store IDs remove detached stores, source revisions select changed states, and a timeline epoch resets cached history after Clear. Initial connections receive the latest page; Load older events uses `/api/events`. New-event catch-up is paginated too. Oldest-retained sequence metadata removes evicted cached events. Both APIs return independent buffers and cap a page at 200 events. The authenticated `/api/snapshot` export remains complete even when the browser has loaded only one history page.
+
+## Pause and sampling
+
+Pause capture stops mutation/action retention while the source application continues running. It does not detach stores or remove retained history. Resume captures the current value of each attached Store, so the inspector catches up. A sampled policy records at most one mutation per Store per interval; action completions remain visible. `Options.SampleInterval` sets the initial interval, or use the Capture rate control and `SetCapture(paused, interval)`. Zero records every change. The UI shows paused/sampled status and skipped notification counts. Sampled current state may lag the source until another accepted capture, resuming, or disabling sampling.
+
+Policy checks happen before JSON encoding/redaction; a notification already encoding can finish, but the recorder rechecks pause before retention. This reduces diagnostic encoding work, not the source Store's own cloning/notification cost. Capturing is still synchronous and full retained states still consume the configured byte budget. Sampling intentionally omits intermediate mutations and cannot serve as an audit log. Capture controls change only diagnostics, not application state; restoration remains separately opt-in.
