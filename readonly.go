@@ -14,6 +14,9 @@ type Reader[T any] interface {
 	SubscribeWith(SubscribeOptions[T], func(Snapshot[T])) func()
 	SubscribeMutations(func(Mutation[T])) func()
 	SubscribeActions(func(ActionEvent)) func()
+	SubscribeActionTrace(func(ActionTrace)) func()
+	ActiveTasks() []ActionTrace
+	TaskSnapshot() TaskSnapshot
 	Watch(context.Context, int) <-chan Snapshot[T]
 	readStore() *Store[T]
 }

@@ -32,6 +32,9 @@ type Store[T any] struct {
 	listeners         map[uint64]listener[T]
 	mutationListeners map[uint64]func(Mutation[T])
 	actionListeners   map[uint64]func(ActionEvent)
+	traceListeners    map[uint64]func(ActionTrace)
+	traceRevision     uint64
+	activeTasks       map[uint64]ActionTrace
 	actionHooks       map[uint64]ActionHooks
 	id                string
 	nextAction        uint64
@@ -58,6 +61,8 @@ func newStore[T any](id string, initial T) *Store[T] {
 }
 func newStoreWithClone[T any](id string, initial T, clone func(T) T) *Store[T] {
 	s := &Store[T]{id: id, clone: clone, listeners: map[uint64]listener[T]{}, mutationListeners: map[uint64]func(Mutation[T]){}, actionListeners: map[uint64]func(ActionEvent){}, actionHooks: map[uint64]ActionHooks{}, done: make(chan struct{})}
+	s.traceListeners = make(map[uint64]func(ActionTrace))
+	s.activeTasks = make(map[uint64]ActionTrace)
 	s.value, s.initial = s.copy(initial), s.copy(initial)
 	return s
 }
@@ -100,7 +105,7 @@ func (s *Store[T]) updateNamed(name string, kind MutationType, fn func(*T) error
 
 // updateCommitted keeps internal bookkeeping in the same commit as the source
 // version. committed runs under the store lock and must not invoke user code.
-func (s *Store[T]) updateCommitted(name string, kind MutationType, fn func(*T) error, committed func(uint64)) error {
+func (s *Store[T]) updateCommitted(name string, kind MutationType, fn func(*T) error, committed func(uint64), actionID ...uint64) error {
 	if fn == nil {
 		return errors.New("nodra: nil update")
 	}
@@ -144,7 +149,11 @@ func (s *Store[T]) updateCommitted(name string, kind MutationType, fn func(*T) e
 	}()
 	if published {
 		s.notify(listeners, snapshot)
-		s.notifyMutation(mutations, Mutation[T]{Type: kind, Name: name, Previous: before, Value: snapshot.Value, Version: snapshot.Version, At: time.Now()})
+		var id uint64
+		if len(actionID) > 0 {
+			id = actionID[0]
+		}
+		s.notifyMutation(mutations, Mutation[T]{ActionID: id, Type: kind, Name: name, Previous: before, Value: snapshot.Value, Version: snapshot.Version, At: time.Now()})
 	}
 	return err
 }
@@ -201,6 +210,8 @@ func (s *Store[T]) Close() error {
 	s.listeners = nil
 	s.mutationListeners = nil
 	s.actionListeners = nil
+	s.traceListeners = nil
+	s.activeTasks = nil
 	s.actionHooks = nil
 	return nil
 }

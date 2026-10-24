@@ -69,3 +69,25 @@ func TestScopeWaitCancellationAndPanicCleanup(t *testing.T) {
 		t.Fatalf("cleanup panic: %v", err)
 	}
 }
+
+func TestScopeDrainsPersistenceBeforeClosingStore(t *testing.T) {
+	scope := NewScope()
+	store := New(0)
+	storage := &lockedStorage{}
+	persistence := NewPersistence(store, storage, JSONCodec[int]{})
+	writer, err := persistence.AutoSaveAsync(context.Background(), AsyncOptions{Debounce: time.Hour})
+	requireNoError(t, err)
+	requireNoError(t, scope.Defer(func(context.Context) error { return store.Close() }))
+	requireNoError(t, scope.Defer(writer.Close))
+	requireNoError(t, scope.Observe(store.Subscribe(func(Snapshot[int]) {})))
+	requireNoError(t, store.Set(7))
+	requireNoError(t, scope.Close(context.Background()))
+	raw, err := storage.Load(context.Background())
+	requireNoError(t, err)
+	if string(raw) != "7" {
+		t.Fatalf("shutdown did not flush latest state: %s", raw)
+	}
+	if err := store.Set(8); !errors.Is(err, ErrClosed) {
+		t.Fatal("scope did not close owned store")
+	}
+}

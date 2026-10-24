@@ -204,13 +204,20 @@ func TestAsyncActionDoesNotHoldLockWhileWorkingOrNotifying(t *testing.T) {
 func TestAsyncActionCloseTimeoutAndConcurrentRuns(t *testing.T) {
 	store := New(0)
 	release := make(chan struct{})
-	action, err := NewAsyncAction(store, "load", func(context.Context, int, func(float64)) (int, error) { <-release; return 1, nil }, func(s *int, v int) error { *s = v; return nil })
+	entered := make(chan struct{})
+	var once sync.Once
+	action, err := NewAsyncAction(store, "load", func(context.Context, int, func(float64)) (int, error) {
+		once.Do(func() { close(entered) })
+		<-release
+		return 1, nil
+	}, func(s *int, v int) error { *s = v; return nil })
 	requireNoError(t, err)
 	var wg sync.WaitGroup
 	for n := range 20 {
 		wg.Go(func() { _, runErr := action.Run(context.Background(), n); requireNoError(t, runErr) })
 	}
 	wg.Wait()
+	<-entered
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 	if err := action.Close(ctx); !errors.Is(err, context.DeadlineExceeded) {

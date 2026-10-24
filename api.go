@@ -240,6 +240,7 @@ const (
 
 // Mutation contains Pinia-like subscription metadata.
 type Mutation[T any] struct {
+	ActionID uint64
 	Type     MutationType
 	Name     string
 	Previous T
@@ -250,13 +251,17 @@ type Mutation[T any] struct {
 
 // ActionEvent describes one completed action.
 type ActionEvent struct {
-	ID       uint64
-	StoreID  string
-	Name     string
-	Started  time.Time
-	Finished time.Time
-	Duration time.Duration
-	Err      error
+	ID        uint64
+	RunID     uint64
+	Key       string
+	Version   uint64
+	Committed bool
+	StoreID   string
+	Name      string
+	Started   time.Time
+	Finished  time.Time
+	Duration  time.Duration
+	Err       error
 }
 
 // ActionHooks observes action lifecycle events. Before runs before the
@@ -310,7 +315,7 @@ func (s *Store[T]) Do(name string, fn func(*T) error) error {
 			hook.Before(event)
 		}
 	}
-	err := s.updateNamed(name, MutationAction, fn)
+	err := s.updateCommitted(name, MutationAction, fn, func(version uint64) { event.Version = version; event.Committed = true }, event.ID)
 	s.finishAction(event, hooks, err)
 	return err
 }
@@ -320,7 +325,7 @@ func (s *Store[T]) newAction(name string) (ActionEvent, []ActionHooks) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.nextAction++
-	event := ActionEvent{ID: s.nextAction, StoreID: s.id, Name: name, Started: started}
+	event := ActionEvent{ID: s.nextAction, StoreID: s.id, Name: name, Started: started, Version: s.version}
 	hooks := make([]ActionHooks, 0, len(s.actionHooks))
 	for _, hook := range s.actionHooks {
 		hooks = append(hooks, hook)
