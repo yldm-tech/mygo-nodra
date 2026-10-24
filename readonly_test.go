@@ -60,7 +60,8 @@ func TestReadOnlyProjectionPipeline(t *testing.T) {
 func TestReadOnlyNilSources(t *testing.T) {
 	var reader ReadOnly[int]
 	var store *Store[int]
-	for _, source := range []Reader[int]{nil, store, reader} {
+	var pointer *ReadOnly[int]
+	for _, source := range []Reader[int]{nil, store, reader, pointer} {
 		stop := Invalidate(source, &mygo.Window{})
 		stop()
 		stop = InvalidateSelector(source, &mygo.Window{}, func(v int) int { return v })

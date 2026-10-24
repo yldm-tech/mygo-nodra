@@ -66,7 +66,7 @@ func (s *Store[T]) prepareTrace(event ActionTrace) (ActionTrace, []func(ActionTr
 	return event, listeners
 }
 
-// ActiveTasks returns current queued/running tasks, independent of diagnostic sampling. Terminal tasks are released by the source; Task.Status retains their final state.
+// TaskSnapshot identifies current queued/running tasks and the source trace revision at capture time. Terminal tasks are released by the source; Task.Status retains their final state.
 type TaskSnapshot struct {
 	Revision uint64
 	Tasks    []ActionTrace
@@ -82,6 +82,7 @@ func (s *Store[T]) TaskSnapshot() TaskSnapshot {
 	return TaskSnapshot{Revision: s.traceRevision, Tasks: result}
 }
 
+// ActiveTasks returns queued/running tasks independently of diagnostic sampling. The slice is owned by the caller.
 func (s *Store[T]) ActiveTasks() []ActionTrace { return s.TaskSnapshot().Tasks }
 
 func (r ReadOnly[T]) ActiveTasks() []ActionTrace {

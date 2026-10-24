@@ -37,6 +37,9 @@ func sourceStore[T any](source Reader[T]) *Store[T] {
 	if source == nil {
 		return nil
 	}
+	if view, ok := source.(*ReadOnly[T]); ok && view == nil {
+		return nil
+	}
 	return source.readStore()
 }
 

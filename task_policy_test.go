@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestKeyedActionsDoNotCancelOtherKeys(t *testing.T) {
@@ -224,6 +225,11 @@ func TestCanceledWorkStillOccupiesConcurrencySlot(t *testing.T) {
 	if err := waitTask(t, second); !errors.Is(err, ErrSuperseded) {
 		t.Fatalf("replaced queue entry: %v", err)
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Millisecond)
+	defer cancel()
+	if err := third.Wait(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("replacement bypassed occupied slot: %v", err)
+	}
 	close(release)
 	if err := waitTask(t, first); !errors.Is(err, ErrSuperseded) {
 		t.Fatalf("old work: %v", err)
@@ -234,5 +240,35 @@ func TestCanceledWorkStillOccupiesConcurrencySlot(t *testing.T) {
 	}
 	if len(store.ActiveTasks()) != 0 {
 		t.Fatal("terminal task retained by source")
+	}
+}
+
+func TestProgressObserverPanicEndsTaskAndReleasesSourceEntry(t *testing.T) {
+	store := New(0)
+	entered, release := make(chan struct{}), make(chan struct{})
+	action, err := NewAsyncAction(store, "report", func(_ context.Context, _ int, report func(float64)) (int, error) {
+		close(entered)
+		<-release
+		report(.5)
+		return 9, nil
+	}, func(s *int, v int) error { *s = v; return nil })
+	requireNoError(t, err)
+	defer func() { _ = action.Close(context.Background()) }()
+	task, err := action.Run(context.Background(), 0)
+	requireNoError(t, err)
+	<-entered
+	stop := task.Status().Subscribe(func(snapshot Snapshot[AsyncState]) {
+		if snapshot.Value.Progress > 0 {
+			panic("progress observer")
+		}
+	})
+	defer stop()
+	close(release)
+	var panicErr *PanicError
+	if err := waitTask(t, task); !errors.As(err, &panicErr) {
+		t.Fatalf("progress observer: %v", err)
+	}
+	if store.Get() != 0 || len(store.ActiveTasks()) != 0 || task.Status().Get().Phase != TaskFailed {
+		t.Fatal("failed progress left committed state or active task")
 	}
 }

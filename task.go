@@ -85,7 +85,6 @@ type AsyncAction[T, I, R any] struct {
 	apply       func(*T, R) error
 	state       *Store[AsyncState]
 	mu          sync.Mutex
-	latest      *Task
 	runs        map[*Task]struct{}
 	next        uint64
 	closed      bool
@@ -171,7 +170,6 @@ func (a *AsyncAction[T, I, R]) Run(ctx context.Context, input I) (*Task, error) 
 	event.RunID, event.Key = a.next, key
 	initial := AsyncState{ID: a.next, Name: a.name, Running: true, Phase: TaskQueued, Key: key}
 	task := &Task{ID: a.next, ctx: runCtx, cancel: cancel, done: make(chan struct{}), key: key, state: New(initial), event: event, hooks: hooks}
-	a.latest = task
 	a.latestByKey[key] = task
 	a.runs[task] = struct{}{}
 	a.pending = append(a.pending, task)

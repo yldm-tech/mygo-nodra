@@ -205,3 +205,20 @@ Each run owns its context and completion channel. Source closure requests cancel
 ## Edit history policy
 
 `TrackWith` can compare only relevant fields and merge recorded values into current state on travel. Ignored changes advance the observed source version without adding a step or invalidating redo. Restore must explicitly merge ignored fields when they should survive travel. Policy callbacks are pure and non-reentrant because history catches up while holding its lock and, during travel, the Store lock. BeginGroup keeps notifications live while recording only the first relevant baseline; groups nest and may span frames. All writers join an open group. Undo/redo during a group returns ErrHistoryGroup. Evicted and popped entries are zeroed so unused slice capacity does not retain old state references.
+
+
+## Read capability and owned shutdown
+
+`ReadOnly[T]` is a concrete wrapper with an unexported backing pointer. Its method set has no mutations, hooks or Close; converting it to Reader does not make the writable Store recoverable by a type assertion. Reader is sealed to Nodra sources so borrowed projections can use their commit-isolation guarantees. Observational helpers accept both writable Stores and read-only views. The status of an Action and each Task use this boundary; source lifetime remains with the owner.
+
+Scope closes observations before LIFO drains, with context cancellation at the start. Registration and shutdown share one lock, but all user cleanup runs outside it. Late observations stop immediately; late drains receive the first shutdown context and return ErrClosed plus their own error. The first Close runs cleanup once; other callers wait on one completion channel or their own context. A deadline cannot preempt cleanup that ignores cancellation. Persistence workers that must flush use a context independent of Scope.Context. Scope has no implicit global registry or ownership of shared stores.
+
+## Bounded task scheduling and tracing
+
+Each action owns a FIFO of accepted tasks, a running-work count and latest ownership per key. Canceling work does not free its slot until that run exits. Queued tasks wait on change/cancellation channels rather than polling. Queue admission excludes canceled and replaceable queued tasks; rejection leaves existing contexts intact. QueueAll never applies latest-owner rejection. With one worker, acceptance order also determines commit order; concurrent work can complete in any order.
+
+Task status revisions prevent overlapping progress notifications from replacing a newer global status. Preparing a source trace is ordered with that task's status lock; trace callbacks run after every lock is released. This prevents delayed progress from resurrecting a terminal source entry. Source active-task snapshots include a trace revision for attach/resume reconciliation. Terminal entries leave that map, while each Task owns its closed status snapshot. Action ID is allocated by the source; RunID belongs to one AsyncAction. Published mutation and completion metadata share the exact accepted commit version. Batches intentionally coalesce action identity at their later publication boundary.
+
+## Recovery boundary
+
+Persistence validation happens on isolated snapshots/decoded values before replacement, never by mutating Store-owned state. File backup is a second atomic file replacement after the primary; backup failure can therefore report a partially successful Save. Loading a backup is a read plus validated memory replacement and deliberately does not repair or delete the primary. Startup must decide how to handle a failed primary load before enabling autosave. The library does not silently choose a recovery policy or coordinate independent writers.

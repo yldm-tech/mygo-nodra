@@ -79,9 +79,23 @@ func TestScopeDrainsPersistenceBeforeClosingStore(t *testing.T) {
 	requireNoError(t, err)
 	requireNoError(t, scope.Defer(func(context.Context) error { return store.Close() }))
 	requireNoError(t, scope.Defer(writer.Close))
+	entered := make(chan struct{})
+	action, err := NewAsyncAction(store, "wait", func(ctx context.Context, _ int, _ func(float64)) (int, error) {
+		close(entered)
+		<-ctx.Done()
+		return 0, ctx.Err()
+	}, func(s *int, v int) error { *s = v; return nil })
+	requireNoError(t, err)
+	requireNoError(t, scope.Defer(action.Close))
+	task, err := action.Run(scope.Context(), 0)
+	requireNoError(t, err)
+	<-entered
 	requireNoError(t, scope.Observe(store.Subscribe(func(Snapshot[int]) {})))
 	requireNoError(t, store.Set(7))
 	requireNoError(t, scope.Close(context.Background()))
+	if err := task.Wait(context.Background()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("scope did not cancel and drain work: %v", err)
+	}
 	raw, err := storage.Load(context.Background())
 	requireNoError(t, err)
 	if string(raw) != "7" {
