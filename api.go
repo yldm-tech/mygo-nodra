@@ -255,6 +255,7 @@ type Mutation[T any] struct {
 
 // ActionEvent describes one completed action.
 type ActionEvent struct {
+	Metrics   TaskMetrics
 	ID        uint64
 	RunID     uint64
 	Key       string
