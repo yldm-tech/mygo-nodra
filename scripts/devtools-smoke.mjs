@@ -246,7 +246,7 @@ try {
   tasks.on('pageerror', error => errors.push(error.message));
   const now = new Date().toISOString();
   const taskFixture = {
-    stores: [{ id: 'workspace', version: 4, generation: 1, state: { matches: 12 }, tasksDropped: 2 }],
+    stores: [{ id: 'workspace', version: 4, generation: 1, state: { matches: 12 }, tasksDropped: 2, taskProgressCoalesced: 98 }],
     events: [
       { sequence: 1, generation: 1, storeId: 'workspace', actionId: 21, runId: 1, kind: 'task', name: 'Index workspace', phase: 'running', progress: .4, at: now },
       { sequence: 2, generation: 1, storeId: 'workspace', actionId: 21, kind: 'mutation', mutation: 'action', name: 'Index workspace', version: 4, previous: { matches: 0 }, state: { matches: 12 }, at: now },
@@ -263,7 +263,7 @@ try {
   await tasks.getByText('Connected', { exact: true }).waitFor();
   await tasks.locator('#tab-tasks').click();
   assert.equal(await tasks.locator('.task-card').count(), 3);
-  assert.match(await tasks.locator('#task-summary').innerText(), /2 active.*2 summaries omitted/);
+  assert.match(await tasks.locator('#task-summary').innerText(), /2 active.*2 summaries omitted.*98 progress updates coalesced/);
   assert.equal(await tasks.getByRole('progressbar', { name: 'Index workspace progress' }).getAttribute('value'), '0.4');
   await tasks.locator('.task-card[data-action-id="21"]').click();
   assert.equal(await tasks.locator('.event').count(), 2);

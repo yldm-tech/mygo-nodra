@@ -174,7 +174,7 @@
     const tasks = (data.tasks || []).filter(task => task.storeId === storeId);
     const active = tasks.filter(task => ['queued', 'running'].includes(task.phase)).length;
     byId('task-count').textContent = active;
-    byId('task-summary').textContent = `${active} active · ${tasks.length} retained${store?.tasksDropped ? ` · ${store.tasksDropped} summaries omitted` : ''}${data.capture?.paused ? ' · capture paused' : ''}`;
+    byId('task-summary').textContent = `${active} active · ${tasks.length} retained${store?.tasksDropped ? ` · ${store.tasksDropped} summaries omitted` : ''}${store?.taskProgressCoalesced ? ` · ${store.taskProgressCoalesced} progress updates coalesced` : ''}${data.capture?.paused ? ' · capture paused' : ''}`;
     byId('task-clear-filter').hidden = actionFilter === null;
     const rows = tasks.map(task => {
       const button = element('button', 'task-card');

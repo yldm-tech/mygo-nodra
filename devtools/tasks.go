@@ -62,6 +62,7 @@ func (i *Inspector) retainTaskLocked(node *attached, event Event) bool {
 
 func (i *Inspector) trimTasksLocked(node *attached) {
 	for len(node.tasks) > 0 && (len(node.tasks) > i.options.Limit || node.taskBytes > i.options.MaxHistoryBytes) {
+		i.forgetProgressLocked(node, node.tasks[0].ActionID)
 		node.taskBytes -= eventBytes(node.tasks[0])
 		node.taskFloor = node.tasks[0].ActionID
 		node.tasks[0] = Event{}
@@ -79,13 +80,40 @@ func (i *Inspector) recordTrace(node *attached, trace nodra.ActionTrace) {
 	if i.closed || i.paused || i.stores[node.view.ID] != node {
 		return
 	}
-	event := traceEvent(node, trace)
-	event.Sequence = i.next + 1
-	if !i.retainTaskLocked(node, event) {
+	if trace.ID <= node.taskFloor {
 		return
 	}
-	i.appendLocked(event)
-	node.revision = i.revision
+	var previous *Event
+	for n := range node.tasks {
+		if node.tasks[n].ActionID == trace.ID {
+			previous = &node.tasks[n]
+			break
+		}
+	}
+	if previous != nil && trace.TaskVersion <= previous.TaskVersion {
+		return
+	}
+	progress := node.progress[trace.ID]
+	if progress != nil && progress.hasPending && trace.TaskVersion <= progress.pending.TaskVersion {
+		return
+	}
+	if i.options.TaskProgressInterval > 0 && trace.Phase == nodra.TaskRunning && trace.Err == nil && previous != nil && previous.Phase == nodra.TaskRunning && progress != nil {
+		remaining := i.options.TaskProgressInterval - time.Since(progress.last)
+		if remaining > 0 {
+			event := traceEvent(node, trace)
+			if eventBytes(event) > i.options.MaxHistoryBytes {
+				return
+			}
+			progress.pending = event
+			progress.hasPending = true
+			node.view.TaskProgressCoalesced++
+			if progress.timer == nil {
+				progress.timer = time.AfterFunc(remaining, func() { i.flushProgress(node, trace.ID, progress) })
+			}
+			return
+		}
+	}
+	i.recordTaskLocked(node, traceEvent(node, trace))
 }
 
 // A resumed inspector can recover currently active tasks but cannot reconstruct outcomes omitted during pause. Mark those summaries explicitly instead of claiming success or cancellation.
@@ -105,6 +133,7 @@ func (i *Inspector) refreshTasks(node *attached, snapshot nodra.TaskSnapshot) {
 	}
 	for n, event := range node.tasks {
 		if (event.Phase == nodra.TaskQueued || event.Phase == nodra.TaskRunning) && !active[event.ActionID] && event.TraceRevision <= snapshot.Revision {
+			i.forgetProgressLocked(node, event.ActionID)
 			event.Phase = "unobserved"
 			event.Error = ""
 			event.At = time.Now().UTC()
