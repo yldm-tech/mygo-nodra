@@ -129,7 +129,39 @@ func TestAsyncActionCancellationAndLifecycle(t *testing.T) {
 			if store.Get() != 0 {
 				t.Fatal("canceled result committed")
 			}
+			if status := action.Status().Get(); status.Running || status.Error == "" {
+				t.Fatalf("canceled task left nonterminal status: %+v", status)
+			}
 		})
+	}
+}
+
+func TestAsyncActionRecoversAfterCommitClonePanic(t *testing.T) {
+	store := NewWithClone(0, func(value int) int {
+		if value == 1 {
+			panic("commit clone")
+		}
+		return value
+	})
+	action, err := NewAsyncAction(store, "load", func(_ context.Context, input int, _ func(float64)) (int, error) {
+		return input, nil
+	}, func(value *int, result int) error { *value = result; return nil })
+	requireNoError(t, err)
+	defer func() { _ = action.Close(context.Background()) }()
+	first, err := action.Run(context.Background(), 1)
+	requireNoError(t, err)
+	var panicErr *PanicError
+	if err := waitTask(t, first); !errors.As(err, &panicErr) {
+		t.Fatalf("expected clone panic, got %v", err)
+	}
+	if store.Get() != 0 || store.Version() != 0 {
+		t.Fatal("clone panic published a partial commit")
+	}
+	second, err := action.Run(context.Background(), 2)
+	requireNoError(t, err)
+	requireNoError(t, waitTask(t, second))
+	if store.Get() != 2 || store.Version() != 1 {
+		t.Fatal("clone panic prevented a subsequent commit")
 	}
 }
 

@@ -37,14 +37,14 @@
       <div class="workspace-label"><svg class="icon"><use href="#i-cube"/></svg><span>State inspector</span></div>
       <div class="sidebar-heading"><h2>Stores</h2><span id="store-count" class="count">0</span></div>
       <div id="stores"></div>
-      <div class="sidebar-bottom"><div class="session-card"><span class="eyebrow">THIS SESSION</span><strong><span class="status-dot"></span>Recording events</strong><p>State and history stay on this device.</p><div class="session-stats"><span><b id="session-events">0</b> events</span><span><b id="session-errors">0</b> errors</span></div></div><div class="sidebar-note"><svg class="icon"><use href="#i-lock"/></svg>Local connection only</div></div>
+      <div class="sidebar-bottom"><div class="session-card"><span class="eyebrow">THIS SESSION</span><strong><span class="status-dot"></span><span id="capture-status">Recording events</span></strong><p>State and history stay on this device.</p><div class="capture-controls"><button id="capture-pause" aria-pressed="false">Pause capture</button><label>Capture rate<select id="capture-rate" aria-label="Capture rate"><option value="0">Every change</option><option value="100">At most 10 / sec</option><option value="1000">At most 1 / sec</option></select></label></div><div class="session-stats"><span><b id="session-events">0</b> events</span><span><b id="session-errors">0</b> errors</span></div></div><div class="sidebar-note"><svg class="icon"><use href="#i-lock"/></svg>Local connection only</div></div>
     </aside>
     <section class="timeline" aria-label="Event timeline">
       <div class="timeline-heading"><div><h2>Timeline <span id="event-count" class="count">0</span></h2><p>Follow every state change.</p></div><button id="live" class="live-button"><span class="status-dot"></span>Live</button></div>
       <label class="search-field"><svg class="icon"><use href="#i-search"/></svg><input id="filter" aria-label="Filter events" type="search" placeholder="Filter events…"></label>
       <div class="event-filters" role="group" aria-label="Event type"><button data-kind="all" aria-pressed="true">All events</button><button data-kind="mutation" aria-pressed="false">Mutations</button><button data-kind="action" aria-pressed="false">Actions</button><button data-kind="error" aria-pressed="false">Errors</button></div>
       <div class="list-caption"><span>RECENT EVENTS</span><span>Latest first</span></div>
-      <div id="events"></div>
+      <div id="events"></div><button id="history-more" class="history-more" hidden>Load older events</button>
       <div class="timeline-bottom"><span class="status-dot"></span><span id="timeline-status">Waiting for events</span><span id="retention-status" title="Retained event payload budget"></span></div>
     </section>
     <section class="detail" aria-label="State inspector">
@@ -64,7 +64,7 @@
       </div>
     </section>
   </main>
-  <footer><span><span class="status-dot"></span>Nodra DevTools<span class="footer-separator">·</span><span id="footer-stats">No stores attached</span></span><span>Local session<span class="footer-separator">·</span>Updates every second</span></footer>
+  <footer><span><span class="status-dot"></span>Nodra DevTools<span class="footer-separator">·</span><span id="footer-stats">No stores attached</span></span><span>Local session<span class="footer-separator">·</span>Incremental updates</span></footer>
   <noscript>This inspector requires JavaScript.</noscript>
 </body>
 </html>

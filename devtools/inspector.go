@@ -32,7 +32,9 @@ var (
 // valid JSON. Redacted inspectors are always read-only to avoid restoring masked
 // data. The default event limit is 200; state and event histories stay in memory.
 type Options struct {
-	Limit int
+	// SampleInterval skips mutation encoding within this interval per store. Zero captures every mutation; action completions remain observable.
+	SampleInterval time.Duration
+	Limit          int
 	// MaxStateBytes limits each encoded state after redaction (default 1 MiB).
 	MaxStateBytes int
 	// MaxHistoryBytes budgets retained state/text plus event metadata (16 MiB).
@@ -53,6 +55,7 @@ type Store struct {
 // Event sequences describe capture order, not an ordering guarantee between
 // concurrent writers. Version and At preserve the source mutation's metadata.
 type Event struct {
+	ActionID   uint64             `json:"actionId,omitempty"`
 	Sequence   uint64             `json:"sequence"`
 	StoreID    string             `json:"storeId"`
 	Kind       string             `json:"kind"`
@@ -68,6 +71,9 @@ type Event struct {
 }
 
 type Snapshot struct {
+	Revision   uint64    `json:"revision"`
+	Cursor     uint64    `json:"cursor"`
+	Capture    Capture   `json:"capture"`
 	Format     int       `json:"format"`
 	CapturedAt time.Time `json:"capturedAt"`
 	Stores     []Store   `json:"stores"`
@@ -84,15 +90,22 @@ type Retention struct {
 }
 
 type attached struct {
-	view    Store
-	stop    func()
-	restore func(json.RawMessage) error
+	revision    uint64
+	lastCapture time.Time
+	capture     func()
+	view        Store
+	stop        func()
+	restore     func(json.RawMessage) error
 }
 
 // Inspector captures JSON state and events without changing Store's execution
 // model. Encoding occurs on the notifying goroutine; use it for development,
 // with immutable state or NewWithClone. Close releases subscriptions and server.
 type Inspector struct {
+	revision     uint64
+	cleared      uint64
+	paused       bool
+	skipped      uint64
 	mu           sync.Mutex
 	options      Options
 	stores       map[string]*attached
@@ -107,6 +120,9 @@ type Inspector struct {
 }
 
 func New(options Options) *Inspector {
+	if options.SampleInterval < 0 {
+		options.SampleInterval = 0
+	}
 	if options.Limit < 1 {
 		options.Limit = 200
 	}
@@ -130,6 +146,11 @@ func Attach[T any](i *Inspector, id string, source *nodra.Store[T]) (func(), err
 	state, stateErr := i.encode(id, initial.Value)
 	node := &attached{view: Store{ID: id, Version: initial.Version, State: state, Error: stateErr,
 		Restorable: i.options.AllowRestore && i.options.Redact == nil && stateErr == ""}}
+	node.capture = func() {
+		latest := source.Snapshot()
+		raw, message := i.encode(id, latest.Value)
+		i.record(node, Event{StoreID: id, Kind: "snapshot", Version: latest.Version, At: time.Now().UTC(), State: raw, Error: message}, message, true)
+	}
 	node.restore = func(raw json.RawMessage) error {
 		var value T
 		if err := decode(raw, &value); err != nil {
@@ -149,19 +170,26 @@ func Attach[T any](i *Inspector, id string, source *nodra.Store[T]) (func(), err
 	i.stores[id] = node
 	node.view.Generation = i.next + 1
 	i.appendLocked(Event{StoreID: id, Generation: node.view.Generation, Kind: "snapshot", Version: initial.Version, At: time.Now().UTC(), State: state, Error: stateErr})
+	node.revision = i.revision
 	i.mu.Unlock()
 	stopMutation := source.SubscribeMutations(func(m nodra.Mutation[T]) {
+		if !i.allowCapture(node, true) {
+			return
+		}
 		state, stateErr := i.encode(id, m.Value)
 		previous, previousErr := i.encode(id, m.Previous)
 		i.record(node, Event{StoreID: id, Kind: "mutation", Mutation: m.Type, Name: m.Name,
 			Version: m.Version, At: m.At, Previous: previous, State: state, Error: joinMessages(stateErr, previousErr)}, stateErr, true)
 	})
 	stopAction := source.SubscribeActions(func(a nodra.ActionEvent) {
+		if !i.allowCapture(node, false) {
+			return
+		}
 		message := ""
 		if a.Err != nil {
 			message = a.Err.Error()
 		}
-		i.record(node, Event{StoreID: id, Kind: "action", Name: a.Name, At: a.Finished,
+		i.record(node, Event{StoreID: id, Kind: "action", ActionID: a.ID, Name: a.Name, At: a.Finished,
 			Version: source.Version(), Duration: a.Duration, Error: message}, "", false)
 	})
 	stop := func() { stopMutation(); stopAction() }
@@ -186,6 +214,7 @@ func Attach[T any](i *Inspector, id string, source *nodra.Store[T]) (func(), err
 			i.mu.Lock()
 			if i.stores[id] == node {
 				delete(i.stores, id)
+				i.revision++
 			}
 			i.mu.Unlock()
 			stop()
@@ -221,6 +250,7 @@ func (i *Inspector) encode(id string, value any) (json.RawMessage, string) {
 }
 
 func (i *Inspector) appendLocked(event Event) {
+	i.revision++
 	i.next++
 	event.Sequence = i.next
 	size := eventBytes(event)
@@ -248,12 +278,20 @@ func (i *Inspector) record(node *attached, event Event, stateErr string, update 
 	if i.closed || i.stores[node.view.ID] != node {
 		return
 	}
+	if i.paused {
+		i.skipped++
+		i.revision++
+		return
+	}
 	if update && event.Version >= node.view.Version {
 		node.view.Version, node.view.State, node.view.Error = event.Version, event.State, stateErr
 		node.view.Restorable = i.options.AllowRestore && i.options.Redact == nil && stateErr == ""
 	}
 	event.Generation = node.view.Generation
 	i.appendLocked(event)
+	if update {
+		node.revision = i.revision
+	}
 }
 
 // Snapshot returns an independent export, including copies of JSON buffers.
@@ -261,6 +299,7 @@ func (i *Inspector) Snapshot() Snapshot {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	result := Snapshot{Format: 1, CapturedAt: time.Now().UTC(), Stores: make([]Store, 0, len(i.stores)), Events: make([]Event, len(i.events))}
+	result.Revision, result.Cursor, result.Capture = i.revision, i.next, i.captureLocked()
 	result.Retention = Retention{Bytes: i.historyBytes, MaxBytes: i.options.MaxHistoryBytes, MaxEvents: i.options.Limit, Dropped: i.dropped}
 	for _, node := range i.stores {
 		view := node.view
@@ -279,6 +318,8 @@ func (i *Inspector) Clear() {
 	i.mu.Lock()
 	i.events = nil
 	i.historyBytes, i.dropped = 0, 0
+	i.revision++
+	i.cleared = i.revision
 	i.mu.Unlock()
 }
 

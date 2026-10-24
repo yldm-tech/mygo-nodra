@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -98,7 +99,7 @@ func (i *Inspector) Handler() http.Handler {
 
 func (i *Inspector) serveAPI(w http.ResponseWriter, r *http.Request) {
 	method := http.MethodGet
-	if r.URL.Path == "/api/restore" || r.URL.Path == "/api/clear" {
+	if r.URL.Path == "/api/restore" || r.URL.Path == "/api/clear" || r.URL.Path == "/api/capture" {
 		method = http.MethodPost
 	}
 	if r.Method != method {
@@ -107,6 +108,47 @@ func (i *Inspector) serveAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.URL.Path {
+	case "/api/changes", "/api/events":
+		values := r.URL.Query()
+		parse := func(key string) (uint64, error) {
+			if values.Get(key) == "" {
+				return 0, nil
+			}
+			return strconv.ParseUint(values.Get(key), 10, 64)
+		}
+		revision, e1 := parse("revision")
+		cursor, e2 := parse("cursor")
+		before, e3 := parse("before")
+		limit, e4 := parse("limit")
+		if e1 != nil || e2 != nil || e3 != nil || e4 != nil || limit > 200 {
+			http.Error(w, "invalid pagination", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/changes" {
+			_ = json.NewEncoder(w).Encode(i.Changes(revision, cursor, int(limit)))
+		} else {
+			_ = json.NewEncoder(w).Encode(i.EventsBefore(before, int(limit)))
+		}
+	case "/api/capture":
+		if strings.Split(r.Header.Get("Content-Type"), ";")[0] != "application/json" {
+			http.Error(w, "JSON required", http.StatusUnsupportedMediaType)
+			return
+		}
+		raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1024))
+		var policy struct {
+			Paused           bool  `json:"paused"`
+			SampleIntervalMS int64 `json:"sampleIntervalMS"`
+		}
+		if err != nil || decode(raw, &policy) != nil || policy.SampleIntervalMS < 0 || policy.SampleIntervalMS > 60000 {
+			http.Error(w, "invalid capture policy", http.StatusBadRequest)
+			return
+		}
+		if err := i.SetCapture(policy.Paused, time.Duration(policy.SampleIntervalMS)*time.Millisecond); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	case "/api/snapshot":
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(i.Snapshot())

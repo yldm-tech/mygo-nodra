@@ -2,7 +2,7 @@
   'use strict';
   const byId = id => document.getElementById(id);
   const token = location.hash.slice(1);
-  let data = { stores: [], events: [] }, storeId = null, sequence = null, loading = false, editorKey = '', editorDirty = false, kind = 'all';
+  let data = { stores: [], events: [] }, storeId = null, sequence = null, loading = false, editorKey = '', editorDirty = false, kind = 'all', cursor = 0, oldest = 0;
   const format = value => JSON.stringify(value, null, 2);
   const message = text => { byId('message').textContent = text; byId('message').hidden = !text; };
   const element = (tag, className, text) => {
@@ -252,12 +252,27 @@
     loading = true;
     try {
       if (!token) throw new Error('Open the full session URL printed by your application, including its fragment token.');
-      const next = await api('/api/snapshot');
-      const changed = format(next.stores) !== format(data.stores) || format(next.events) !== format(data.events);
-      data = next;
+      const next = await api(`/api/changes?revision=${data.revision || 0}&cursor=${cursor}&limit=50`);
+
+      const changed = next.revision !== data.revision || next.events.length > 0;
+      if (next.reset) data = { stores: [], events: [] };
+      const stores = new Map(data.stores.filter(store => next.storeIds.includes(store.id)).map(store => [store.id, store]));
+      for (const store of next.stores) stores.set(store.id, store);
+      const events = new Map(data.events.filter(event => event.sequence >= next.oldest).map(event => [event.sequence, event]));
+      for (const event of next.events) events.set(event.sequence, event);
+      cursor = next.cursor; oldest = next.oldest;
+      data = { format: 1, stores: [...stores.values()].sort((a, b) => a.id.localeCompare(b.id)), events: [...events.values()].sort((a, b) => a.sequence - b.sequence), revision: next.revision, epoch: next.epoch, retention: next.retention, capture: next.capture };
+      if (changed) render();
+      byId('history-more').hidden = !data.events.length || data.events[0].sequence <= oldest;
+      byId('capture-pause').textContent = next.capture.paused ? 'Resume capture' : 'Pause capture';
+      byId('capture-pause').setAttribute('aria-pressed', String(next.capture.paused));
+      const rate = byId('capture-rate'), value = String(next.capture.sampleIntervalMS);
+      if (![...rate.options].some(option => option.value === value)) rate.add(new Option(`${value} ms`, value));
+      rate.value = value;
+      byId('capture-status').textContent = `${next.capture.paused ? 'Capture paused' : next.capture.sampleIntervalMS ? 'Sampled capture' : 'Recording events'}${next.capture.skipped ? ` · ${next.capture.skipped} skipped` : ''}`;
+      if (next.more) setTimeout(refresh, 0);
       document.body.dataset.connection = 'connected';
       byId('connection').textContent = 'Connected'; message('');
-      if (changed) render();
     } catch (error) { document.body.dataset.connection = 'disconnected'; byId('connection').textContent = 'Disconnected'; message(error.message); }
     finally { loading = false; }
   }
@@ -291,6 +306,25 @@
     try { localStorage.setItem('nodra.devtools.theme', theme); } catch { /* Storage is optional. */ }
   };
   byId('refresh').onclick = refresh;
+  byId('history-more').onclick = async () => {
+    const button = byId('history-more'); button.disabled = true;
+    try {
+      const page = await api(`/api/events?before=${data.events[0]?.sequence || 0}&limit=50`);
+      if (page.epoch !== data.epoch) { await refresh(); return; }
+      const events = new Map([...page.events, ...data.events].filter(event => event.sequence >= oldest).map(event => [event.sequence, event]));
+      data.events = [...events.values()].sort((a, b) => a.sequence - b.sequence);
+      render(); button.hidden = !page.more;
+    } catch (error) { message(error.message); }
+    finally { button.disabled = false; }
+  };
+  async function capturePolicy(paused) {
+    try {
+      await api('/api/capture', { paused, sampleIntervalMS: Number(byId('capture-rate').value) });
+      await refresh();
+    } catch (error) { message(error.message); }
+  }
+  byId('capture-pause').onclick = () => capturePolicy(!data.capture?.paused);
+  byId('capture-rate').onchange = () => capturePolicy(Boolean(data.capture?.paused));
   byId('state-search').oninput = renderState;
   byId('view-tree').onclick = () => { stateFormat = 'tree'; renderState(); };
   byId('view-json').onclick = () => { stateFormat = 'json'; byId('state-search').value = ''; renderState(); };
@@ -326,9 +360,12 @@
     try { await api('/api/clear', {}); sequence = null; await refresh(); }
     catch (error) { message(error.message); }
   };
-  byId('export').onclick = () => {
-    const url = URL.createObjectURL(new Blob([format(data)], { type: 'application/json' }));
-    const link = document.createElement('a'); link.href = url; link.download = 'nodra-snapshot.json'; link.click(); URL.revokeObjectURL(url);
+  byId('export').onclick = async () => {
+    try {
+      const snapshot = await api('/api/snapshot');
+      const url = URL.createObjectURL(new Blob([format(snapshot)], { type: 'application/json' }));
+      const link = document.createElement('a'); link.href = url; link.download = 'nodra-snapshot.json'; link.click(); URL.revokeObjectURL(url);
+    } catch (error) { message(error.message); }
   };
   for (const name of ['state', 'changes', 'event']) {
     byId(`tab-${name}`).onclick = () => setView(name);
