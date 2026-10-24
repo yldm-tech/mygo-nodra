@@ -57,3 +57,9 @@ jobs:
           done
           echo "::error::$MODULE@$VERSION does not resolve through proxy.golang.org"
           exit 1
+      - name: Compile and run an independent published-module consumer
+        env:
+          GOPROXY: https://proxy.golang.org
+          GOWORK: "off"
+          VERSION: ${{ steps.version.outputs.version }}
+        run: bash scripts/check-consumer.sh "$VERSION"

@@ -86,13 +86,7 @@ core package does not assume a filesystem, JSON, database or encryption scheme.
 `AutoSave` is available when an application intentionally wants best-effort
 saving.
 
-Each `Persistence` instance serializes `Save` calls, taking the current state
-only after acquiring the save lock and holding it through encoding and storage.
-This prevents a slow older encode or write from replacing a newer save. Use
-one persistence instance per storage destination; separate instances and direct
-storage calls are not coordinated. `Load` is a startup operation, not a
-transaction with concurrent store updates. It publishes the loaded value after
-decoding, so autosave subscriptions can safely save it again.
+Each `Persistence` instance serializes `Save` calls, taking the current state only after acquiring the save lock and holding it through encoding and storage. This prevents a slow older encode or write from replacing a newer save. Use one persistence instance per storage destination with ordinary FileStorage; separate instances and direct storage calls are not coordinated unless all writers explicitly use CheckedFileStorage. `Load` is a startup operation, not a transaction with concurrent store updates. It publishes the loaded value after decoding, so autosave subscriptions can safely save it again.
 
 Stopping `AutoSaveWithErrors` unsubscribes, closes the error channel and releases
 its background watcher even when the context and store remain open. An already
@@ -221,7 +215,9 @@ Task status revisions prevent overlapping progress notifications from replacing 
 
 ## Recovery boundary
 
-Persistence validation happens on isolated snapshots/decoded values before replacement, never by mutating Store-owned state. File backup is a second atomic file replacement after the primary; backup failure can therefore report a partially successful Save. Loading a backup is a read plus validated memory replacement and deliberately does not repair or delete the primary. Startup must decide how to handle a failed primary load before enabling autosave. The library does not silently choose a recovery policy or coordinate independent writers.
+Persistence validation happens on isolated snapshots/decoded values before replacement, never by mutating Store-owned state. File backup is a second atomic file replacement after the primary; backup failure can therefore report a partially successful Save. Loading a backup is a read plus validated memory replacement and deliberately does not repair or delete the primary. Startup must decide how to handle a failed primary load before enabling autosave. The library does not silently choose a recovery policy. Plain FileStorage does not coordinate independent writers.
+
+`FileStorage.WithConflictDetection` returns a pointer backend with a baseline SHA-256 content fingerprint and a cancelable per-instance gate. It canonicalizes the parent directory and uses `gofrs/flock` on a persistent `.lock` sidecar for cross-process compare-and-replace serialization. Lock handles close after every operation; the sidecar must remain while instances are active so all writers lock the same inode. A conflict returns expected/actual fingerprints without replacing primary or backup. Load explicitly accepts the current primary baseline, while LoadBackup leaves it unchanged. The primary-replaced callback advances this instance's baseline before attempting backup, preserving retry after a partial Save. These guarantees require cooperating writers at the same canonical regular local file. Noncooperating concurrent editors can race the check/rename, and content hashes do not detect equal-content or reverted changes. Symlink/nonregular primary files are rejected; hard-link aliases and network locks are outside the contract.
 
 ## Value composition, history budgets and progress control
 

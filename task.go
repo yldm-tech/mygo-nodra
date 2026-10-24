@@ -34,6 +34,7 @@ type ActionOptions[I any] struct {
 
 // AsyncState describes the latest run. Progress is between zero and one; Error is diagnostic text. Treat the action's status store as read-only.
 type AsyncState struct {
+	Metrics  TaskMetrics
 	ID       uint64
 	Name     string
 	Running  bool
@@ -46,18 +47,24 @@ type AsyncState struct {
 
 // Task is one run of an AsyncAction. Cancel requests cooperative cancellation; Wait waits for work and its completion notifications, independently of the waiter's context. Do not Wait from the task's own work, hooks or synchronous subscribers.
 type Task struct {
-	ID      uint64
-	ctx     context.Context
-	cancel  context.CancelCauseFunc
-	done    chan struct{}
-	err     error
-	key     string
-	state   *Store[AsyncState]
-	event   ActionEvent
-	hooks   []ActionHooks
-	started bool
-	ready   bool
-	readyAt time.Time
+	ID             uint64
+	ctx            context.Context
+	cancel         context.CancelCauseFunc
+	done           chan struct{}
+	err            error
+	key            string
+	state          *Store[AsyncState]
+	event          ActionEvent
+	hooks          []ActionHooks
+	started        bool
+	ready          bool
+	readyAt        time.Time
+	acquiredAt     time.Time
+	workStarted    time.Time
+	workFinished   time.Time
+	commitStarted  time.Time
+	commitFinished time.Time
+	finishedAt     time.Time
 }
 
 func (t *Task) Status() ReadOnly[AsyncState] { return t.state.ReadOnly() }
@@ -172,8 +179,9 @@ func (a *AsyncAction[T, I, R]) Run(ctx context.Context, input I) (*Task, error) 
 	a.next++
 	runCtx, cancel := context.WithCancelCause(ctx)
 	event.RunID, event.Key = a.next, key
-	initial := AsyncState{ID: a.next, Name: a.name, Running: true, Phase: TaskQueued, Key: key}
-	task := &Task{ID: a.next, ctx: runCtx, cancel: cancel, done: make(chan struct{}), key: key, state: New(initial), event: event, hooks: hooks, ready: a.options.Debounce == 0, readyAt: time.Now().Add(a.options.Debounce)}
+	initial := AsyncState{ID: a.next, Name: a.name, Running: true, Phase: TaskQueued, Key: key, Metrics: TaskMetrics{QueueDepth: queued + 1, ActiveWorkers: a.active}}
+	event.Started = time.Now()
+	task := &Task{ID: a.next, ctx: runCtx, cancel: cancel, done: make(chan struct{}), key: key, state: New(initial), event: event, hooks: hooks, ready: a.options.Debounce == 0, readyAt: event.Started.Add(a.options.Debounce)}
 	a.latestByKey[key] = task
 	a.runs[task] = struct{}{}
 	a.pending = append(a.pending, task)
@@ -222,6 +230,7 @@ func (a *AsyncAction[T, I, R]) run(task *Task, input I, initErr error) {
 		if cause := context.Cause(task.ctx); cause != nil {
 			return cause
 		}
+		event.Metrics = a.metrics(task)
 		for _, hook := range hooks {
 			if hook.Before != nil {
 				hook.Before(event)
@@ -230,18 +239,22 @@ func (a *AsyncAction[T, I, R]) run(task *Task, input I, initErr error) {
 		if cause := context.Cause(task.ctx); cause != nil {
 			return cause
 		}
-		result, err := a.work(task.ctx, input, func(progress float64) {
-			if math.IsNaN(progress) || math.IsInf(progress, 0) || task.ctx.Err() != nil {
-				return
-			}
-			if err := a.status(task, func(s *AsyncState) {
-				if s.Running {
-					s.Progress = max(s.Progress, min(1, max(0, progress)))
+		a.markTime(&task.workStarted)
+		result, err := func() (R, error) {
+			defer a.markTime(&task.workFinished)
+			return a.work(task.ctx, input, func(progress float64) {
+				if math.IsNaN(progress) || math.IsInf(progress, 0) || task.ctx.Err() != nil {
+					return
 				}
-			}); err != nil {
-				task.cancel(err)
-			}
-		})
+				if err := a.status(task, func(s *AsyncState) {
+					if s.Running {
+						s.Progress = max(s.Progress, min(1, max(0, progress)))
+					}
+				}); err != nil {
+					task.cancel(err)
+				}
+			})
+		}()
 		if cause := context.Cause(task.ctx); cause != nil {
 			return cause
 		}
@@ -249,6 +262,8 @@ func (a *AsyncAction[T, I, R]) run(task *Task, input I, initErr error) {
 			return err
 		}
 		// Hold the generation lock through commit cloning, then release before Store notifications. Failed mutations and clone panics release it in the defer too.
+		a.markTime(&task.commitStarted)
+		defer a.markTime(&task.commitFinished)
 		locked := false
 		defer func() {
 			if locked {
@@ -276,6 +291,8 @@ func (a *AsyncAction[T, I, R]) run(task *Task, input I, initErr error) {
 			locked = false
 		}, event.ID)
 	})
+	a.markTime(&task.finishedAt)
+	event.Metrics = a.metrics(task)
 	if hookErr := taskBoundary(func() error { a.store.finishAction(event, hooks, err); return nil }); hookErr != nil {
 		err = errors.Join(err, hookErr)
 	}
@@ -330,7 +347,10 @@ func taskPhase(err error) TaskPhase {
 }
 
 func (a *AsyncAction[T, I, R]) status(task *Task, update func(*AsyncState)) error {
-	stateErr := taskBoundary(func() error { return task.state.Update(func(s *AsyncState) { update(s); s.Revision++ }) })
+	stateErr := taskBoundary(func() error {
+		// Sample under the status lock so concurrent progress cannot publish an older elapsed duration with a newer revision. No action lock holder waits on this task's status lock.
+		return task.state.Update(func(s *AsyncState) { update(s); s.Metrics = a.metrics(task); s.Revision++ })
+	})
 	state := task.state.Get()
 	globalErr := taskBoundary(func() error {
 		return a.state.Update(func(s *AsyncState) {
@@ -356,7 +376,7 @@ func (a *AsyncAction[T, I, R]) trace(task *Task, state AsyncState, err error) {
 		task.state.mu.RUnlock()
 		return
 	}
-	trace, listeners := a.store.prepareTrace(ActionTrace{ID: event.ID, RunID: task.ID, StoreID: event.StoreID, Name: a.name, Key: task.key, Phase: state.Phase, Progress: state.Progress, TaskVersion: state.Revision, Version: event.Version, Committed: event.Committed, At: time.Now(), Duration: time.Since(event.Started), Err: err})
+	trace, listeners := a.store.prepareTrace(ActionTrace{ID: event.ID, RunID: task.ID, StoreID: event.StoreID, Name: a.name, Key: task.key, Phase: state.Phase, Progress: state.Progress, TaskVersion: state.Revision, Version: event.Version, Committed: event.Committed, At: time.Now(), Duration: time.Since(event.Started), Metrics: state.Metrics, Err: err})
 	task.state.mu.RUnlock()
 	for _, listener := range listeners {
 		listener(trace)
@@ -392,6 +412,7 @@ func (a *AsyncAction[T, I, R]) acquire(task *Task) error {
 			a.removePendingLocked(task)
 			a.active++
 			task.started = true
+			task.acquiredAt = time.Now()
 			a.signalLocked()
 			return nil
 		}
