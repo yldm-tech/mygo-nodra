@@ -256,11 +256,19 @@ func (s *Store[T]) SubscribeWith(options SubscribeOptions[T], fn func(Snapshot[T
 	s.listeners[id] = wrapped
 	initial := Snapshot[T]{s.value, s.version}
 	s.mu.Unlock()
-	if options.Immediate {
-		wrapped(Snapshot[T]{s.copy(initial.Value), initial.Version})
-	}
 	var once sync.Once
-	return func() { once.Do(func() { s.mu.Lock(); delete(s.listeners, id); s.mu.Unlock() }) }
+	stop := func() { once.Do(func() { s.mu.Lock(); delete(s.listeners, id); s.mu.Unlock() }) }
+	if options.Immediate {
+		initialized := false
+		defer func() {
+			if !initialized {
+				stop()
+			}
+		}()
+		wrapped(Snapshot[T]{s.copy(initial.Value), initial.Version})
+		initialized = true
+	}
+	return stop
 }
 func (s *Store[T]) SubscribeMutations(fn func(Mutation[T])) func() {
 	if fn == nil {

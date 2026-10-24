@@ -73,7 +73,9 @@ derived-cache locks, so a comparison panic propagates without poisoning the
 subscription. Comparisons may run concurrently and retry against a newer
 baseline; use pure, concurrency-safe comparators. A comparison failure leaves
 the previous projection and its version unchanged. The source write has already
-committed when a notification or comparison panics.
+committed when a notification or comparison panics. If immediate delivery or
+initial catch-up panics during subscription, derived or history construction,
+its registered source listener is removed before the panic propagates.
 
 ## History
 

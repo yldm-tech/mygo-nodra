@@ -69,9 +69,16 @@ func SubscribeSelectorWith[T any, V comparable](store *Store[T], selector func(T
 		}
 	}
 	stop := store.Subscribe(changed)
+	initialized := false
+	defer func() {
+		if !initialized {
+			stop()
+		}
+	}()
 	// Catch changes between reading the initial value and registering. The
 	// version check also avoids recomputing when a callback already caught up.
 	changed(store.Snapshot())
+	initialized = true
 	return stop
 }
 
@@ -144,7 +151,14 @@ func Derive[T any, V any](store *Store[T], selector func(T) V, equals func(V, V)
 		}
 	}
 	d.stop = store.Subscribe(changed)
+	initialized := false
+	defer func() {
+		if !initialized {
+			d.stop()
+		}
+	}()
 	changed(store.Snapshot())
+	initialized = true
 	return d
 }
 func (d *Derived[T, V]) Get() V { d.mu.RLock(); defer d.mu.RUnlock(); return d.value }

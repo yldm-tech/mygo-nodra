@@ -38,8 +38,15 @@ func Track[T any](store *Store[T], limit int) *History[T] {
 	initial := store.Snapshot()
 	h.current, h.version = initial.Value, initial.Version
 	h.stop = store.Subscribe(h.observe)
+	initialized := false
+	defer func() {
+		if !initialized {
+			h.stop()
+		}
+	}()
 	// Changes during registration may coalesce into one entry.
 	h.observe(store.Snapshot())
+	initialized = true
 	return h
 }
 

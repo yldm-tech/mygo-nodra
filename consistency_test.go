@@ -329,3 +329,69 @@ func TestEqualityRetriesAgainstNewerBaseline(t *testing.T) {
 		})
 	}
 }
+
+func TestSubscriptionInitializationPanicReleasesRegistration(t *testing.T) {
+	for _, kind := range []string{"subscription", "selector", "derived"} {
+		t.Run(kind, func(t *testing.T) {
+			store := New(0)
+			equals := func(_, _ int) bool { panic("setup failed") }
+			selector := func(v int) int {
+				if v == 0 {
+					requireNoError(t, store.Set(1))
+				}
+				return v
+			}
+			func() {
+				defer func() {
+					if got := recover(); got != "setup failed" {
+						t.Fatalf("panic = %v", got)
+					}
+				}()
+				switch kind {
+				case "subscription":
+					store.SubscribeWith(SubscribeOptions[int]{Immediate: true}, func(Snapshot[int]) { panic("setup failed") })
+				case "selector":
+					SubscribeSelectorWith(store, selector, func(int, int) {}, SelectorOptions[int]{Equals: equals})
+				case "derived":
+					Derive(store, selector, equals)
+				}
+			}()
+			store.mu.RLock()
+			registrations := len(store.listeners)
+			store.mu.RUnlock()
+			if registrations != 0 {
+				t.Fatalf("failed setup leaked %d subscriptions", registrations)
+			}
+			requireNoError(t, store.Set(2))
+		})
+	}
+}
+
+func TestHistoryInitializationPanicReleasesRegistration(t *testing.T) {
+	armed, copies := false, 0
+	store := NewWithClone(0, func(v int) int {
+		if armed {
+			copies++
+			if copies == 2 {
+				panic("snapshot failed")
+			}
+		}
+		return v
+	})
+	armed = true
+	func() {
+		defer func() {
+			if got := recover(); got != "snapshot failed" {
+				t.Fatalf("panic = %v", got)
+			}
+		}()
+		Track(store, 10)
+	}()
+	store.mu.RLock()
+	registrations := len(store.listeners)
+	store.mu.RUnlock()
+	if registrations != 0 {
+		t.Fatalf("failed setup leaked %d subscriptions", registrations)
+	}
+	requireNoError(t, store.Set(1))
+}
