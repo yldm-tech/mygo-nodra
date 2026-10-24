@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/yldm-tech/nodra/compare/v0.3.0...v0.4.0) (2026-10-24)
+
+
+### Features
+
+* support collection selectors and bounded large-state DevTools ([#16](https://github.com/yldm-tech/nodra/issues/16)) ([8938323](https://github.com/yldm-tech/nodra/commit/893832330aa4975bd7b6aa3f915bd1675ea5e086))
+
 ## [0.3.0](https://github.com/yldm-tech/nodra/compare/v0.2.0...v0.3.0) (2026-10-24)
 
 
